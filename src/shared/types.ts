@@ -38,6 +38,10 @@ export interface IntentProfile {
   intent: BuyerIntent;
   label: string;
   shortLabel: string;
+  modeLabel: string;
+  watches: string[];
+  bestFor: string;
+  buyerQuestion: string;
   prioritySignals: SignalKey[];
 }
 
@@ -60,6 +64,7 @@ export interface VerdictResult {
   beat?: BetterDeal;
   intent?: BuyerIntent;
   intentSummary?: string;
+  triggerClaim?: TriggerClaim;
   nextActions?: NextAction[];
   generatedAt: number;
 }
@@ -95,6 +100,12 @@ export interface NextAction {
   label: string;
   kind: 'ask_seller' | 'compare' | 'avoid' | 'verify' | 'open_source';
   url?: string;
+}
+
+export interface TriggerClaim {
+  text: string;
+  category: ClaimCategory;
+  risk: Risk;
 }
 
 // What the offline scrape script writes to data/cache/<slug>.json.
@@ -161,6 +172,7 @@ export interface AgentVerdict {
   confidence: number;
   buyer_intent?: BuyerIntent;
   intent_summary?: string;
+  trigger_claim?: TriggerClaim;
   product: ProductIdentity;
   seller_handle: string;
   reasons: Array<{ signal: SignalKey; risk: Risk; finding: string }>;

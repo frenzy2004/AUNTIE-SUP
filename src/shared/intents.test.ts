@@ -23,7 +23,7 @@ describe('shared.intents', () => {
       sig('claims', 'YELLOW', 'FDA claim is unverified')
     ]);
 
-    expect(summary).toContain('For health/safety');
+    expect(summary).toContain('Are the safety or certification claims supported');
     expect(summary).toContain('FDA claim is unverified');
   });
 

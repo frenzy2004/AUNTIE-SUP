@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import ReactDOM from 'react-dom/client';
 import './snip.css';
+import { auntie } from './bridge';
 
 interface Point { x: number; y: number }
 
@@ -11,12 +12,12 @@ function SnipUI() {
   const draggingRef = useRef(false);
 
   useEffect(() => {
-    window.auntie.getSnipBackground().then(setBgUrl);
+    auntie.getSnipBackground().then(setBgUrl);
   }, []);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') window.auntie.snipCancel();
+      if (e.key === 'Escape') auntie.snipCancel();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -34,7 +35,7 @@ function SnipUI() {
   const onMouseUp = () => {
     draggingRef.current = false;
     if (!start || !end) {
-      window.auntie.snipCancel();
+      auntie.snipCancel();
       return;
     }
     const x = Math.min(start.x, end.x);
@@ -42,10 +43,10 @@ function SnipUI() {
     const width = Math.abs(end.x - start.x);
     const height = Math.abs(end.y - start.y);
     if (width < 8 || height < 8) {
-      window.auntie.snipCancel();
+      auntie.snipCancel();
       return;
     }
-    window.auntie.snipComplete({ x, y, width, height });
+    auntie.snipComplete({ x, y, width, height });
   };
 
   const rect = start && end

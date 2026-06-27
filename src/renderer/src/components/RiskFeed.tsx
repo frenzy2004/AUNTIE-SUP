@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import type { VerdictResult, AgentVerdict, SignalKey, Risk } from '@shared/types';
+import type { BuyerIntent, VerdictResult } from '@shared/types';
+import { toAgentJson } from '@shared/agent';
 import {
   DEFAULT_BUYER_INTENT,
   INTENT_PROFILES,
@@ -7,10 +8,12 @@ import {
   sortSignalsForIntent,
   summarizeIntentVerdict
 } from '@shared/intents';
+import { auntie } from '../bridge';
 
 interface Props {
   result: VerdictResult;
   index: number; // for the timestamp offset (older verdicts get earlier "times")
+  activeIntent: BuyerIntent;
 }
 
 function trustScore(signals: VerdictResult['signals']): number {
@@ -33,33 +36,20 @@ function fakeTimestamp(i: number): string {
   return `${m}:${s}`;
 }
 
-function toAgentJson(r: VerdictResult): AgentVerdict {
-  return {
-    verdict: r.verdict,
-    confidence: Number(r.confidence.toFixed(2)),
-    buyer_intent: r.intent,
-    intent_summary: r.intentSummary,
-    product: r.product,
-    seller_handle: r.seller.handle,
-    reasons: r.signals
-      .filter(s => s.risk !== 'GREEN')
-      .map(s => ({ signal: s.key as SignalKey, risk: s.risk as Risk, finding: s.finding })),
-    recommendation: r.verdict === 'AVOID' ? 'ABORT' : r.verdict === 'CAUTION' ? 'REVIEW' : 'PROCEED',
-    next_actions: r.nextActions?.map(action => action.label),
-    better_deal_url: r.beat?.url
-  };
-}
-
-export function RiskFeed({ result, index }: Props) {
+export function RiskFeed({ result, index, activeIntent }: Props) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [showJson, setShowJson] = useState(false);
   const score = trustScore(result.signals);
-  const intent = result.intent ?? DEFAULT_BUYER_INTENT;
+  const intent = activeIntent ?? result.intent ?? DEFAULT_BUYER_INTENT;
   const intentProfile = INTENT_PROFILES[intent];
-  const intentSummary = result.intentSummary || summarizeIntentVerdict(intent, result.signals);
-  const nextActions = result.nextActions?.length
+  const isOriginalIntent = result.intent === intent;
+  const intentSummary = isOriginalIntent && result.intentSummary
+    ? result.intentSummary
+    : summarizeIntentVerdict(intent, result.signals);
+  const nextActions = isOriginalIntent && result.nextActions?.length
     ? result.nextActions
     : buildNextActions(intent, result.verdict, result.signals, result.beat);
+  const safeNextActions = nextActions.filter(action => action.label && action.kind);
 
   const toggle = (key: string) => {
     setExpanded(prev => {
@@ -70,7 +60,7 @@ export function RiskFeed({ result, index }: Props) {
   };
 
   const openBeat = () => {
-    if (result.beat?.url) window.auntie.openExternal(result.beat.url);
+    if (result.beat?.url) auntie.openExternal(result.beat.url);
   };
 
   const ordered = sortSignalsForIntent(result.signals, intent);
@@ -92,6 +82,13 @@ export function RiskFeed({ result, index }: Props) {
         <div className="feed-intent-label">For {intentProfile.label}</div>
         <div className="feed-intent-copy">{intentSummary}</div>
       </div>
+
+      {result.triggerClaim && (
+        <div className={`feed-trigger ${result.triggerClaim.risk}`}>
+          <div className="feed-trigger-label">Triggered by live claim</div>
+          <div className="feed-trigger-copy">"{result.triggerClaim.text}"</div>
+        </div>
+      )}
 
       {/* Stats block */}
       <div className="feed-stats">
@@ -130,15 +127,15 @@ export function RiskFeed({ result, index }: Props) {
         </div>
       )}
 
-      {nextActions.length > 0 && (
+      {safeNextActions.length > 0 && (
         <div className="feed-actions">
-          {nextActions.map((action, i) => (
+          {safeNextActions.map((action, i) => (
             <button
               key={`${action.kind}-${i}`}
               type="button"
               className="feed-action"
               onClick={() => {
-                if (action.url) window.auntie.openExternal(action.url);
+                if (action.url) auntie.openExternal(action.url);
               }}
               title={action.url ? 'Open related evidence' : action.kind.replace('_', ' ')}
             >
@@ -179,7 +176,7 @@ export function RiskFeed({ result, index }: Props) {
                       onClick={e => {
                         e.preventDefault();
                         e.stopPropagation();
-                        window.auntie.openExternal(url);
+                        auntie.openExternal(url);
                       }}
                     >
                       Source {si + 1}

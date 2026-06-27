@@ -1,6 +1,8 @@
 // Desktop audio capture in the renderer. The main process resolves the
 // screen source id; we feed it to getUserMedia and downsample to 16k mono PCM.
 
+import { auntie } from '../bridge';
+
 export interface CaptureHandle {
   stop: () => void;
 }
@@ -11,7 +13,7 @@ export interface CaptureOpts {
 }
 
 export async function startDesktopAudioCapture(opts: CaptureOpts): Promise<CaptureHandle> {
-  const src = await window.auntie.getAudioSource();
+  const src = await auntie.getAudioSource();
   if (!src) throw new Error('No screen source available for audio capture.');
 
   // On Electron we use the legacy chromeMediaSource constraint to grab desktop audio.

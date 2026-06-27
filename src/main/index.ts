@@ -22,6 +22,15 @@ let tray: Tray | null = null;
 // YouTube blanking itself on focus loss doesn't matter, we have the frame.
 let snipScreenshot: { dataUrl: string; width: number; height: number; scaleFactor: number } | null = null;
 
+function reportSnipError(err: unknown): void {
+  const message = err instanceof Error ? err.message : 'Could not start snip.';
+  console.error('[snip] failed', err);
+  snipWindow?.close();
+  snipWindow = null;
+  overlayWindow?.show();
+  overlayWindow?.webContents.send('auntie:snip-error', message);
+}
+
 function isDev(): boolean {
   return !!process.env['ELECTRON_RENDERER_URL'];
 }
@@ -110,60 +119,65 @@ function toggleOverlay(): void {
 
 async function startSnip(): Promise<void> {
   if (snipWindow) return;
-  // Hide the overlay first so it isn't in the captured screenshot.
-  if (overlayWindow?.isVisible()) overlayWindow.hide();
+  try {
+    // Hide the overlay first so it isn't in the captured screenshot.
+    if (overlayWindow?.isVisible()) overlayWindow.hide();
 
-  const primary = screen.getPrimaryDisplay();
-  const { width: dispW, height: dispH } = primary.size;
-  const scaleFactor = primary.scaleFactor || 1;
+    const primary = screen.getPrimaryDisplay();
+    const { width: dispW, height: dispH } = primary.size;
+    const scaleFactor = primary.scaleFactor || 1;
 
-  // Give Windows a frame to actually hide the overlay before we capture.
-  await new Promise(r => setTimeout(r, 80));
+    // Give Windows a frame to actually hide the overlay before we capture.
+    await new Promise(r => setTimeout(r, 80));
 
-  // Capture the screen NOW so YouTube etc. are frozen in time. The drag UI
-  // will render this image; on release we crop the same image. YouTube
-  // blanking its canvas on focus loss can't affect us — we already have it.
-  const sources = await desktopCapturer.getSources({
-    types: ['screen'],
-    thumbnailSize: { width: Math.round(dispW * scaleFactor), height: Math.round(dispH * scaleFactor) }
-  });
-  const screenSrc = sources[0];
-  if (!screenSrc) {
-    overlayWindow?.show();
-    return;
+    // Capture the screen NOW so YouTube etc. are frozen in time. The drag UI
+    // will render this image; on release we crop the same image.
+    const sources = await desktopCapturer.getSources({
+      types: ['screen'],
+      thumbnailSize: { width: Math.round(dispW * scaleFactor), height: Math.round(dispH * scaleFactor) }
+    });
+    const screenSrc = sources[0];
+    if (!screenSrc) throw new Error('No screen source available. Check Screen Recording permission.');
+
+    const fullImage = screenSrc.thumbnail;
+    const dataUrl = `data:image/png;base64,${fullImage.toPNG().toString('base64')}`;
+    snipScreenshot = { dataUrl, width: dispW, height: dispH, scaleFactor };
+
+    snipWindow = new BrowserWindow({
+      width: dispW,
+      height: dispH,
+      x: 0,
+      y: 0,
+      frame: false,
+      // Opaque window — we draw the captured screenshot as the background.
+      // No transparent-window quirks, no white flash.
+      transparent: false,
+      alwaysOnTop: true,
+      fullscreen: false,
+      movable: false,
+      resizable: false,
+      skipTaskbar: true,
+      hasShadow: false,
+      show: false,
+      backgroundColor: '#000000',
+      webPreferences: {
+        preload: join(__dirname, '../preload/index.mjs'),
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: false
+      }
+    });
+    snipWindow.on('closed', () => {
+      snipWindow = null;
+      overlayWindow?.show();
+    });
+    snipWindow.setAlwaysOnTop(true, 'screen-saver');
+    await snipWindow.loadURL(rendererUrl('snip'));
+    snipWindow.show();
+    snipWindow.focus();
+  } catch (err) {
+    reportSnipError(err);
   }
-  const fullImage = screenSrc.thumbnail;
-  const dataUrl = `data:image/png;base64,${fullImage.toPNG().toString('base64')}`;
-  snipScreenshot = { dataUrl, width: dispW, height: dispH, scaleFactor };
-
-  snipWindow = new BrowserWindow({
-    width: dispW,
-    height: dispH,
-    x: 0,
-    y: 0,
-    frame: false,
-    // Opaque window — we draw the captured screenshot as the background.
-    // No transparent-window quirks, no white flash.
-    transparent: false,
-    alwaysOnTop: true,
-    fullscreen: false,
-    movable: false,
-    resizable: false,
-    skipTaskbar: true,
-    hasShadow: false,
-    show: false,
-    backgroundColor: '#000000',
-    webPreferences: {
-      preload: join(__dirname, '../preload/index.mjs'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: false
-    }
-  });
-  snipWindow.setAlwaysOnTop(true, 'screen-saver');
-  await snipWindow.loadURL(rendererUrl('snip'));
-  snipWindow.show();
-  snipWindow.focus();
 }
 
 function createTray(): void {
@@ -208,27 +222,31 @@ ipcMain.handle('auntie:set-settings', (_e, settings: AuntieSettings) => {
 });
 
 // Renderer kicks snip from the overlay's snip button.
-ipcMain.on('auntie:start-snip', () => { startSnip(); });
+ipcMain.on('auntie:start-snip', () => { void startSnip(); });
 
 // Snip window reports the user's selection rect (in display coords).
 // Main captures the screen, crops, and pushes the PNG back to the overlay.
 ipcMain.on('auntie:snip-complete', async (_e, rect: { x: number; y: number; width: number; height: number } | null) => {
-  snipWindow?.close();
-  snipWindow = null;
-  overlayWindow?.show();
-  if (!rect || rect.width < 4 || rect.height < 4 || !snipScreenshot) return;
+  try {
+    snipWindow?.close();
+    snipWindow = null;
+    overlayWindow?.show();
+    if (!rect || rect.width < 4 || rect.height < 4 || !snipScreenshot) return;
 
-  // Crop from the screenshot we captured at startSnip — not a fresh capture.
-  const fullImage = nativeImage.createFromDataURL(snipScreenshot.dataUrl);
-  const { scaleFactor } = snipScreenshot;
-  const cropped = fullImage.crop({
-    x: Math.round(rect.x * scaleFactor),
-    y: Math.round(rect.y * scaleFactor),
-    width: Math.round(rect.width * scaleFactor),
-    height: Math.round(rect.height * scaleFactor)
-  });
-  const dataUrl = `data:image/png;base64,${cropped.toPNG().toString('base64')}`;
-  overlayWindow?.webContents.send('auntie:snip-result', { dataUrl, width: rect.width, height: rect.height });
+    // Crop from the screenshot we captured at startSnip — not a fresh capture.
+    const fullImage = nativeImage.createFromDataURL(snipScreenshot.dataUrl);
+    const { scaleFactor } = snipScreenshot;
+    const cropped = fullImage.crop({
+      x: Math.round(rect.x * scaleFactor),
+      y: Math.round(rect.y * scaleFactor),
+      width: Math.round(rect.width * scaleFactor),
+      height: Math.round(rect.height * scaleFactor)
+    });
+    const dataUrl = `data:image/png;base64,${cropped.toPNG().toString('base64')}`;
+    overlayWindow?.webContents.send('auntie:snip-result', { dataUrl, width: rect.width, height: rect.height });
+  } catch (err) {
+    reportSnipError(err);
+  }
 });
 
 // The snip UI asks for the captured screenshot to render as its background.

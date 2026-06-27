@@ -254,6 +254,48 @@ button { font-family: inherit; }
   border-color: rgba(167, 139, 250, 0.38);
 }
 
+.intent-brief {
+  margin: 0 14px 10px;
+  padding: 9px 10px;
+  border-radius: 7px;
+  border: 0.5px solid var(--border);
+  background: rgba(255, 255, 255, 0.035);
+}
+.intent-brief-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 700;
+}
+.intent-brief-state {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 8px rgba(167, 139, 250, 0.5);
+}
+.intent-brief-state.live {
+  background: var(--trust);
+  box-shadow: 0 0 8px var(--trust-glow);
+}
+.intent-brief-question {
+  margin-top: 4px;
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.4;
+}
+.intent-brief-meta {
+  margin-top: 7px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1.35;
+}
+
 /* ─── Body (scrollable feed) ──────────────────────────────────────────── */
 .body {
   flex: 1;
@@ -285,6 +327,18 @@ button { font-family: inherit; }
   font-size: 28px;
   margin-bottom: 12px;
   color: var(--text-faint);
+}
+.empty .empty-mascot {
+  margin: 0 auto 14px;
+  width: 108px;
+  height: 108px;
+  border-radius: 50%;
+  overflow: hidden;
+  box-shadow: 0 0 0 1px var(--border-strong), 0 4px 24px rgba(167, 139, 250, 0.22);
+}
+/* Header mascot avatar */
+.header .brand > video {
+  flex-shrink: 0;
 }
 
 /* ─── Risk Feed (cumulative panel: stats header + timestamped list) ──── */
@@ -350,6 +404,33 @@ button { font-family: inherit; }
   font-size: 11.5px;
   line-height: 1.45;
   color: var(--text-dim);
+}
+
+.feed-trigger {
+  padding: 8px 10px;
+  border-radius: 7px;
+  background: rgba(251, 191, 36, 0.08);
+  border: 0.5px solid rgba(251, 191, 36, 0.24);
+}
+.feed-trigger.RED {
+  background: rgba(248, 113, 113, 0.09);
+  border-color: rgba(248, 113, 113, 0.28);
+}
+.feed-trigger-label {
+  font-size: 9.5px;
+  color: var(--caution);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  margin-bottom: 3px;
+}
+.feed-trigger.RED .feed-trigger-label {
+  color: var(--avoid);
+}
+.feed-trigger-copy {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text);
 }
 
 /* Stats row */

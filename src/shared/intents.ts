@@ -15,30 +15,50 @@ export const INTENT_PROFILES: Record<BuyerIntent, IntentProfile> = {
     intent: 'authenticity',
     label: 'Authenticity',
     shortLabel: 'Authentic',
+    modeLabel: 'Authenticity mode',
+    watches: ['authorized seller proof', '100% original claims', 'counterfeit signals'],
+    bestFor: 'branded goods, beauty devices, electronics, luxury items',
+    buyerQuestion: 'Is this likely the real product from a seller with proof?',
     prioritySignals: ['provenance', 'claims', 'footprint', 'price']
   },
   best_price: {
     intent: 'best_price',
     label: 'Best price',
     shortLabel: 'Price',
+    modeLabel: 'Price sanity mode',
+    watches: ['below-market prices', 'fake discount pressure', 'verified alternatives'],
+    bestFor: 'deal hunting without falling for too-good-to-be-true offers',
+    buyerQuestion: 'Is this actually a good deal, or is the low price the risk?',
     prioritySignals: ['price', 'provenance', 'footprint', 'claims']
   },
   health_safety: {
     intent: 'health_safety',
     label: 'Health/safety',
     shortLabel: 'Safety',
+    modeLabel: 'Safety mode',
+    watches: ['medical promises', 'FDA/HSA/halal claims', 'certification proof'],
+    bestFor: 'skincare, supplements, baby products, wellness and food items',
+    buyerQuestion: 'Are the safety or certification claims supported by evidence?',
     prioritySignals: ['claims', 'provenance', 'comments', 'footprint']
   },
   warranty: {
     intent: 'warranty',
     label: 'Warranty',
     shortLabel: 'Warranty',
+    modeLabel: 'Warranty mode',
+    watches: ['official channels', 'local warranty coverage', 'return recourse'],
+    bestFor: 'electronics, appliances, beauty tools and higher-ticket purchases',
+    buyerQuestion: 'Will I have recourse if this product fails or is fake?',
     prioritySignals: ['provenance', 'footprint', 'price', 'claims']
   },
   seller_trust: {
     intent: 'seller_trust',
     label: 'Seller trust',
     shortLabel: 'Seller',
+    modeLabel: 'Seller trust mode',
+    watches: ['fresh accounts', 'off-platform payment', 'buyer complaints'],
+    bestFor: 'unknown livestream sellers, new shops and cross-border listings',
+    buyerQuestion: 'Can I trust this seller enough to transact safely?',
     prioritySignals: ['footprint', 'comments', 'script', 'provenance']
   }
 };
@@ -74,9 +94,9 @@ export function summarizeIntentVerdict(intent: BuyerIntent, signals: Signal[]): 
   const finding = riskSignal.finding.replace(/\s+/g, ' ').trim();
   const ending = finding.endsWith('.') ? finding : `${finding}.`;
   if (riskSignal.risk === 'GREEN') {
-    return `For ${profile.label.toLowerCase()}: the strongest checked signal is reassuring. ${ending}`;
+    return `For ${profile.label.toLowerCase()}: ${profile.buyerQuestion} The strongest checked signal is reassuring: ${ending}`;
   }
-  return `For ${profile.label.toLowerCase()}: this needs review. ${ending}`;
+  return `For ${profile.label.toLowerCase()}: ${profile.buyerQuestion} This needs review: ${ending}`;
 }
 
 export function buildNextActions(
@@ -104,7 +124,7 @@ export function buildNextActions(
 
   if (actions.length < 3) {
     const labelByIntent: Record<BuyerIntent, string> = {
-      authenticity: 'Ask for proof of authenticity',
+      authenticity: 'Ask for authenticity proof',
       best_price: 'Compare verified prices',
       health_safety: 'Ask for certification proof',
       warranty: 'Ask about warranty coverage',

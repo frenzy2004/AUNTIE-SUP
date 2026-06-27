@@ -253,6 +253,30 @@ interface ReasonOut {
   beat?: BetterDeal;
 }
 
+function isNextActionKind(kind: unknown): kind is NextAction['kind'] {
+  return kind === 'ask_seller' ||
+    kind === 'compare' ||
+    kind === 'avoid' ||
+    kind === 'verify' ||
+    kind === 'open_source';
+}
+
+function sanitizeNextActions(value: unknown): NextAction[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const actions = value.flatMap((action): NextAction[] => {
+    if (!action || typeof action !== 'object') return [];
+    const maybe = action as { label?: unknown; kind?: unknown; url?: unknown };
+    if (typeof maybe.label !== 'string' || !maybe.label.trim()) return [];
+    if (!isNextActionKind(maybe.kind)) return [];
+    return [{
+      label: maybe.label.trim(),
+      kind: maybe.kind,
+      url: typeof maybe.url === 'string' && /^https?:\/\//.test(maybe.url) ? maybe.url : undefined
+    }];
+  });
+  return actions.length > 0 ? actions.slice(0, 3) : undefined;
+}
+
 async function reasonOverExa(
   openaiKey: string,
   product: ProductIdentity,
@@ -312,7 +336,7 @@ async function reasonOverExa(
     return {
       signals: Array.isArray(parsed.signals) ? parsed.signals : [],
       intentSummary: typeof parsed.intentSummary === 'string' ? parsed.intentSummary : undefined,
-      nextActions: Array.isArray(parsed.nextActions) ? parsed.nextActions : undefined,
+      nextActions: sanitizeNextActions(parsed.nextActions),
       beat: parsed.beat ?? undefined
     };
   } catch (err) {
