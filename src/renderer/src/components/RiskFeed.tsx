@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import type { BuyerIntent, VerdictResult } from '@shared/types';
+import type { BuyerIntent, Signal, SignalKey, VerdictResult } from '@shared/types';
 import { toAgentJson } from '@shared/agent';
 import {
   DEFAULT_BUYER_INTENT,
@@ -56,6 +56,144 @@ function riskLabel(risk: VerdictResult['signals'][number]['risk']) {
   return 'Clear';
 }
 
+interface FocusReason {
+  label: string;
+  signal: Signal;
+  copy: string;
+}
+
+interface FocusLens {
+  title: string;
+  copy: string;
+  reasons: FocusReason[];
+}
+
+interface FocusAction {
+  label: string;
+  url?: string;
+}
+
+function signalByKey(signals: Signal[], key: SignalKey): Signal | undefined {
+  return signals.find(signal => signal.key === key);
+}
+
+function fallbackSignals(signals: Signal[], used: Set<SignalKey>, count: number): Signal[] {
+  return signals
+    .filter(signal => !used.has(signal.key))
+    .slice(0, count);
+}
+
+function compactFinding(signal: Signal): string {
+  return signal.finding.replace(/\s+/g, ' ').trim();
+}
+
+function buildFocusLens(
+  intent: BuyerIntent,
+  ordered: Signal[],
+  result: VerdictResult
+): FocusLens {
+  const used = new Set<SignalKey>();
+  const pick = (key: SignalKey): Signal | undefined => {
+    const signal = signalByKey(ordered, key);
+    if (signal) used.add(signal.key);
+    return signal;
+  };
+  const from = (label: string, key: SignalKey, copy?: string): FocusReason | null => {
+    const signal = pick(key);
+    if (!signal) return null;
+    return { label, signal, copy: copy ?? compactFinding(signal) };
+  };
+  const withFallback = (lens: Omit<FocusLens, 'reasons'>, reasons: Array<FocusReason | null>): FocusLens => {
+    const primary = reasons.filter(Boolean) as FocusReason[];
+    const extra = fallbackSignals(ordered, used, 2 - primary.length).map(signal => ({
+      label: riskLabel(signal.risk),
+      signal,
+      copy: compactFinding(signal)
+    }));
+    return { ...lens, reasons: [...primary, ...extra].slice(0, 2) };
+  };
+
+  if (intent === 'best_price') {
+    return withFallback(
+      {
+        title: 'Price sanity',
+        copy: result.beat
+          ? `This view compares the deal against market price and verified alternatives like ${result.beat.seller}.`
+          : 'This view looks for too-good-to-be-true pricing before seller reputation.'
+      },
+      [
+        from('Price gap', 'price'),
+        from('Alternative', 'provenance', result.beat
+          ? `Verified option found: ${result.beat.price} from ${result.beat.seller}.`
+          : undefined)
+      ]
+    );
+  }
+
+  if (intent === 'health_safety') {
+    return withFallback(
+      {
+        title: 'Safety proof',
+        copy: 'This view prioritizes medical, certification, and regulated-product claims over general deal quality.'
+      },
+      [
+        from('Claims', 'claims'),
+        from('Proof', 'provenance')
+      ]
+    );
+  }
+
+  if (intent === 'warranty') {
+    return withFallback(
+      {
+        title: 'Warranty and recourse',
+        copy: 'This view asks whether you can get help, return the item, or prove coverage if the product fails.'
+      },
+      [
+        from('Recourse', 'footprint'),
+        from('Official path', 'provenance')
+      ]
+    );
+  }
+
+  if (intent === 'seller_trust') {
+    return withFallback(
+      {
+        title: 'Seller trust',
+        copy: 'This view judges the seller behavior: footprint, buyer complaints, and repeated scripts.'
+      },
+      [
+        from('Footprint', 'footprint'),
+        from('Buyer voice', 'comments'),
+        from('Script', 'script')
+      ]
+    );
+  }
+
+  return withFallback(
+    {
+      title: 'Authenticity proof',
+      copy: 'This view checks whether the seller has proof the product is real, not just convincing sales claims.'
+    },
+    [
+      from('Proof trail', 'provenance'),
+      from('Claims', 'claims')
+    ]
+  );
+}
+
+function buildFocusAction(intent: BuyerIntent, result: VerdictResult): FocusAction {
+  if (intent === 'best_price') {
+    return result.beat?.url
+      ? { label: `Compare ${result.beat.seller}`, url: result.beat.url }
+      : { label: 'Compare verified prices' };
+  }
+  if (intent === 'health_safety') return { label: 'Ask for safety proof' };
+  if (intent === 'warranty') return { label: 'Ask warranty terms' };
+  if (intent === 'seller_trust') return { label: 'Check seller history' };
+  return { label: 'Ask for authenticity proof' };
+}
+
 export function RiskFeed({ result, index, activeIntent }: Props) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [showJson, setShowJson] = useState(false);
@@ -71,8 +209,8 @@ export function RiskFeed({ result, index, activeIntent }: Props) {
     ? result.nextActions
     : buildNextActions(intent, result.verdict, result.signals, result.beat);
   const safeNextActions = nextActions.filter(action => action.label && action.kind);
-  const primaryAction = safeNextActions[0];
-  const secondaryActions = safeNextActions.slice(1);
+  const primaryAction = buildFocusAction(intent, result);
+  const secondaryActions = safeNextActions;
 
   const toggle = (key: string) => {
     setExpanded(prev => {
@@ -87,10 +225,7 @@ export function RiskFeed({ result, index, activeIntent }: Props) {
   };
 
   const ordered = sortSignalsForIntent(result.signals, intent);
-  const keySignals = ordered
-    .filter(signal => signal.risk !== 'GREEN')
-    .slice(0, 2);
-  const visibleSignals = keySignals.length > 0 ? keySignals : ordered.slice(0, 2);
+  const focusLens = buildFocusLens(intent, ordered, result);
 
   return (
     <section className={`decision-card ${result.verdict}`}>
@@ -118,17 +253,17 @@ export function RiskFeed({ result, index, activeIntent }: Props) {
       )}
 
       <div className="decision-lens">
-        <span>{intentProfile.label}</span>
-        <p>{intentProfile.buyerQuestion}</p>
+        <span>{focusLens.title}</span>
+        <p>{focusLens.copy}</p>
       </div>
 
       <div className="decision-section">
         <div className="decision-section-label">Why</div>
         <div className="reason-list">
-          {visibleSignals.map(signal => (
-            <div key={signal.key} className={`reason-item ${signal.risk}`}>
-              <span>{riskLabel(signal.risk)}</span>
-              <p>{signal.finding}</p>
+          {focusLens.reasons.map(reason => (
+            <div key={`${intent}-${reason.signal.key}`} className={`reason-item ${reason.signal.risk}`}>
+              <span>{reason.label}</span>
+              <p>{reason.copy}</p>
             </div>
           ))}
         </div>
