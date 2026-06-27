@@ -1209,6 +1209,9 @@ button { font-family: inherit; }
   flex-wrap: wrap;
   gap: 6px;
 }
+.next-actions .next-primary {
+  min-width: 0;
+}
 .next-primary,
 .next-secondary,
 .beat-strip {

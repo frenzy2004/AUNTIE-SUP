@@ -277,7 +277,7 @@ export function RiskFeed({ result, index, activeIntent }: Props) {
     : buildNextActions(intent, result.verdict, result.signals, result.beat);
   const safeNextActions = nextActions.filter(action => action.label && action.kind);
   const primaryAction = buildFocusAction(intent, result);
-  const secondaryActions = safeNextActions;
+  const secondaryActions = safeNextActions.filter(action => action.label !== primaryAction.label);
 
   const toggle = (key: string) => {
     setExpanded(prev => {
@@ -353,13 +353,6 @@ export function RiskFeed({ result, index, activeIntent }: Props) {
               {primaryAction.label}
             </button>
           )}
-          <button
-            type="button"
-            className="next-secondary"
-            onClick={() => navigator.clipboard.writeText(JSON.stringify(result, null, 2))}
-          >
-            Copy report
-          </button>
         </div>
       </div>
 
@@ -433,6 +426,12 @@ export function RiskFeed({ result, index, activeIntent }: Props) {
         </div>
         <button className="json-toggle" onClick={() => setShowJson(v => !v)}>
           {showJson ? 'Hide agent JSON' : 'View agent JSON'}
+        </button>
+        <button
+          className="json-toggle"
+          onClick={() => navigator.clipboard.writeText(JSON.stringify(result, null, 2))}
+        >
+          Copy report
         </button>
         {showJson && <pre className="json-view">{JSON.stringify(toAgentJson(result), null, 2)}</pre>}
       </details>
