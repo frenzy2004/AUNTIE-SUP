@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import type { AuntieSettings } from '@shared/types';
+import { auntie } from '../bridge';
 
 interface Props {
   open: boolean;
@@ -11,14 +12,14 @@ export function SettingsDrawer({ open, onClose }: Props) {
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    if (open) window.auntie.getSettings().then(setSettings);
+    if (open) auntie.getSettings().then(setSettings);
   }, [open]);
 
   if (!open) return null;
 
   const save = async () => {
     setSaving(true);
-    await window.auntie.setSettings(settings);
+    await auntie.setSettings(settings);
     setSaving(false);
     onClose();
   };

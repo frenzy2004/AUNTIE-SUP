@@ -14,7 +14,11 @@ export interface ReasonInput {
 
 export async function enrichReceipts(input: ReasonInput, openaiKey: string): Promise<Signal[]> {
   if (!openaiKey) return input.signals;
-  const client = new OpenAI({ apiKey: openaiKey });
+  // dangerouslyAllowBrowser is required when this runs in the renderer (the
+  // cache-driven demo path calls enrichReceipts from App.tsx). Without it the
+  // SDK throws a browser-guard error that reason.ts swallows — so the GPT-4o
+  // receipt-rewrite pass would silently never fire. Matches identify.ts / liveJudge.ts.
+  const client = new OpenAI({ apiKey: openaiKey, dangerouslyAllowBrowser: true });
 
   const prompt = [
     'You are AUNTIE, a SEA auntie who watches livestream haul videos and protects shoppers.',

@@ -13,6 +13,11 @@ const auntie = {
     ipcRenderer.on('auntie:snip-result', handler);
     return () => ipcRenderer.off('auntie:snip-result', handler);
   },
+  onSnipError: (cb: (message: string) => void) => {
+    const handler = (_e: unknown, message: string) => cb(message);
+    ipcRenderer.on('auntie:snip-error', handler);
+    return () => ipcRenderer.off('auntie:snip-error', handler);
+  },
   // snip window → main
   snipComplete: (rect: { x: number; y: number; width: number; height: number } | null) =>
     ipcRenderer.send('auntie:snip-complete', rect),

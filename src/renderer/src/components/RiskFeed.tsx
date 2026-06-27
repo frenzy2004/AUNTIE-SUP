@@ -1,9 +1,19 @@
 import React, { useState } from 'react';
-import type { VerdictResult, AgentVerdict, SignalKey, Risk } from '@shared/types';
+import type { BuyerIntent, Signal, SignalKey, VerdictResult } from '@shared/types';
+import { toAgentJson } from '@shared/agent';
+import {
+  DEFAULT_BUYER_INTENT,
+  INTENT_PROFILES,
+  buildNextActions,
+  sortSignalsForIntent,
+  summarizeIntentVerdict
+} from '@shared/intents';
+import { auntie } from '../bridge';
 
 interface Props {
   result: VerdictResult;
   index: number; // for the timestamp offset (older verdicts get earlier "times")
+  activeIntent: BuyerIntent;
 }
 
 function trustScore(signals: VerdictResult['signals']): number {
@@ -18,32 +28,256 @@ function certaintyLabel(conf: number): string {
   return 'LOW certainty';
 }
 
-function fakeTimestamp(i: number): string {
-  // Sequential 00:0X timestamps so the feed reads like a real-time stream.
-  const total = i + 1;
-  const m = Math.floor(total / 60).toString().padStart(2, '0');
-  const s = (total % 60).toString().padStart(2, '0');
-  return `${m}:${s}`;
-}
-
-function toAgentJson(r: VerdictResult): AgentVerdict {
+function decisionCopy(result: VerdictResult, score: number) {
+  if (result.verdict === 'AVOID') {
+    return {
+      title: 'Do not buy yet',
+      copy: 'The risk signals are strong enough to pause this purchase.',
+      score: `${score}/10 trust`
+    };
+  }
+  if (result.verdict === 'CAUTION') {
+    return {
+      title: 'Check before buying',
+      copy: 'There is enough concern to ask for proof or compare alternatives.',
+      score: `${score}/10 trust`
+    };
+  }
   return {
-    verdict: r.verdict,
-    confidence: Number(r.confidence.toFixed(2)),
-    product: r.product,
-    seller_handle: r.seller.handle,
-    reasons: r.signals
-      .filter(s => s.risk !== 'GREEN')
-      .map(s => ({ signal: s.key as SignalKey, risk: s.risk as Risk, finding: s.finding })),
-    recommendation: r.verdict === 'AVOID' ? 'ABORT' : r.verdict === 'CAUTION' ? 'REVIEW' : 'PROCEED',
-    better_deal_url: r.beat?.url
+    title: 'Looks okay',
+    copy: 'No major issue found in this check.',
+    score: `${score}/10 trust`
   };
 }
 
-export function RiskFeed({ result, index }: Props) {
+function riskLabel(risk: VerdictResult['signals'][number]['risk']) {
+  if (risk === 'RED') return 'High';
+  if (risk === 'YELLOW') return 'Note';
+  return 'Clear';
+}
+
+interface FocusReason {
+  label: string;
+  signal: Signal;
+  copy: string;
+}
+
+interface FocusLens {
+  title: string;
+  copy: string;
+  reasons: FocusReason[];
+}
+
+interface FocusAction {
+  label: string;
+  url?: string;
+}
+
+function signalByKey(signals: Signal[], key: SignalKey): Signal | undefined {
+  return signals.find(signal => signal.key === key);
+}
+
+function fallbackSignals(signals: Signal[], used: Set<SignalKey>, count: number): Signal[] {
+  return signals
+    .filter(signal => !used.has(signal.key))
+    .slice(0, count);
+}
+
+function compactFinding(signal: Signal): string {
+  return signal.finding.replace(/\s+/g, ' ').trim();
+}
+
+function normalizedFinding(text: string): string {
+  return text.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+function isGenericFinding(text: string): boolean {
+  const normalized = normalizedFinding(text);
+  return normalized.includes('no specific claims about the product are verified') ||
+    normalized.includes('not assessable from web evidence') ||
+    normalized.includes('needs tiktok comments scrape') ||
+    normalized.includes('would need cross account caption match');
+}
+
+function signalUsefulness(signal: Signal): number {
+  let score = signal.risk === 'RED' ? 30 : signal.risk === 'YELLOW' ? 20 : 10;
+  if (signal.receipts.length > 0) score += 4;
+  if ((signal.sources?.length ?? 0) > 0) score += 3;
+  if (!isGenericFinding(signal.finding)) score += 8;
+  return score;
+}
+
+function dedupeSignals(signals: Signal[]): Signal[] {
+  const byKey = new Map<SignalKey, Signal>();
+  const seenFindings = new Set<string>();
+
+  for (const signal of signals) {
+    const findingKey = normalizedFinding(signal.finding);
+    if (seenFindings.has(findingKey) && isGenericFinding(signal.finding)) continue;
+    seenFindings.add(findingKey);
+
+    const existing = byKey.get(signal.key);
+    if (!existing || signalUsefulness(signal) > signalUsefulness(existing)) {
+      byKey.set(signal.key, signal);
+    }
+  }
+
+  return [...byKey.values()];
+}
+
+function buildFocusLens(
+  intent: BuyerIntent,
+  ordered: Signal[],
+  result: VerdictResult
+): FocusLens {
+  const used = new Set<SignalKey>();
+  const pick = (key: SignalKey): Signal | undefined => {
+    const signal = signalByKey(ordered, key);
+    if (signal) used.add(signal.key);
+    return signal;
+  };
+  const from = (label: string, key: SignalKey, copy?: string): FocusReason | null => {
+    const signal = pick(key);
+    if (!signal) return null;
+    return { label, signal, copy: copy ?? compactFinding(signal) };
+  };
+  const withFallback = (lens: Omit<FocusLens, 'reasons'>, reasons: Array<FocusReason | null>): FocusLens => {
+    const seen = new Set<string>();
+    const primary = (reasons.filter(Boolean) as FocusReason[]).filter(reason => {
+      const key = `${reason.signal.key}:${normalizedFinding(reason.copy)}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    const extra = fallbackSignals(ordered, used, 2 - primary.length).map(signal => ({
+      label: signal.label || riskLabel(signal.risk),
+      signal,
+      copy: compactFinding(signal)
+    }));
+    const cap = result.verdict === 'TRUST' ? 1 : 2;
+    return { ...lens, reasons: [...primary, ...extra].slice(0, cap) };
+  };
+
+  if (intent === 'best_price') {
+    return withFallback(
+      {
+        title: 'Price sanity',
+        copy: result.verdict === 'TRUST'
+          ? 'Price and deal context look acceptable from the evidence checked.'
+          : result.beat
+          ? `This view compares the deal against market price and verified alternatives like ${result.beat.seller}.`
+          : 'This view looks for too-good-to-be-true pricing before seller reputation.'
+      },
+      [
+        from('Price gap', 'price'),
+        from('Alternative', 'provenance', result.beat
+          ? `Verified option found: ${result.beat.price} from ${result.beat.seller}.`
+          : undefined)
+      ]
+    );
+  }
+
+  if (intent === 'health_safety') {
+    return withFallback(
+      {
+        title: 'Safety proof',
+        copy: result.verdict === 'TRUST'
+          ? 'No major safety or certification red flag found in this check.'
+          : 'This view prioritizes medical, certification, and regulated-product claims over general deal quality.'
+      },
+      [
+        from('Safety claim', 'claims'),
+        from('Public proof', 'provenance')
+      ]
+    );
+  }
+
+  if (intent === 'warranty') {
+    return withFallback(
+      {
+        title: 'Warranty and recourse',
+        copy: result.verdict === 'TRUST'
+          ? 'Seller recourse looks acceptable; keep checkout and warranty proof.'
+          : 'This view asks whether you can get help, return the item, or prove coverage if the product fails.'
+      },
+      [
+        from('Recourse', 'footprint'),
+        from('Official path', 'provenance')
+      ]
+    );
+  }
+
+  if (intent === 'seller_trust') {
+    return withFallback(
+      {
+        title: 'Seller trust',
+        copy: result.verdict === 'TRUST'
+          ? 'Seller signals look acceptable from the sources checked.'
+          : 'This view judges the seller behavior: footprint, buyer complaints, and repeated scripts.'
+      },
+      [
+        from('Footprint', 'footprint'),
+        from('Buyer voice', 'comments'),
+        from('Script', 'script')
+      ]
+    );
+  }
+
+  return withFallback(
+    {
+      title: 'Authenticity proof',
+      copy: result.verdict === 'TRUST'
+        ? 'No major authenticity red flag found in the checked evidence.'
+        : 'This view checks whether the seller has proof the product is real, not just convincing sales claims.'
+    },
+    [
+      from('Proof trail', 'provenance'),
+      from('Claims', 'claims')
+    ]
+  );
+}
+
+function buildFocusAction(intent: BuyerIntent, result: VerdictResult): FocusAction {
+  if (result.verdict === 'TRUST') {
+    if (intent === 'health_safety') return { label: 'Check label once' };
+    if (intent === 'warranty') return { label: 'Keep receipt' };
+    if (intent === 'seller_trust') return { label: 'Use platform checkout' };
+    if (intent === 'best_price') {
+      return result.beat?.url
+        ? { label: `Compare ${result.beat.seller}`, url: result.beat.url }
+        : { label: 'Proceed at listed price' };
+    }
+    return { label: 'Use platform checkout' };
+  }
+
+  if (intent === 'best_price') {
+    return result.beat?.url
+      ? { label: `Compare ${result.beat.seller}`, url: result.beat.url }
+      : { label: 'Compare verified prices' };
+  }
+  if (intent === 'health_safety') return { label: 'Ask for safety proof' };
+  if (intent === 'warranty') return { label: 'Ask warranty terms' };
+  if (intent === 'seller_trust') return { label: 'Check seller history' };
+  return { label: 'Ask for authenticity proof' };
+}
+
+export function RiskFeed({ result, index, activeIntent }: Props) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [showJson, setShowJson] = useState(false);
   const score = trustScore(result.signals);
+  const decision = decisionCopy(result, score);
+  const intent = activeIntent ?? result.intent ?? DEFAULT_BUYER_INTENT;
+  const intentProfile = INTENT_PROFILES[intent];
+  const isOriginalIntent = result.intent === intent;
+  const intentSummary = isOriginalIntent && result.intentSummary
+    ? result.intentSummary
+    : summarizeIntentVerdict(intent, result.signals);
+  const nextActions = isOriginalIntent && result.nextActions?.length
+    ? result.nextActions
+    : buildNextActions(intent, result.verdict, result.signals, result.beat);
+  const safeNextActions = nextActions.filter(action => action.label && action.kind);
+  const primaryAction = buildFocusAction(intent, result);
+  const secondaryActions = safeNextActions.filter(action => action.label !== primaryAction.label);
 
   const toggle = (key: string) => {
     setExpanded(prev => {
@@ -54,114 +288,153 @@ export function RiskFeed({ result, index }: Props) {
   };
 
   const openBeat = () => {
-    if (result.beat?.url) window.auntie.openExternal(result.beat.url);
+    if (result.beat?.url) auntie.openExternal(result.beat.url);
   };
 
-  // Risk-colored signals first, GREEN last — the "what to look at" order.
-  const ordered = [...result.signals].sort((a, b) => {
-    const w = { RED: 0, YELLOW: 1, GREEN: 2 } as const;
-    return w[a.risk] - w[b.risk];
-  });
+  const ordered = dedupeSignals(sortSignalsForIntent(result.signals, intent));
+  const focusLens = buildFocusLens(intent, ordered, result);
+  const riskSignalCount = ordered.filter(signal => signal.risk !== 'GREEN').length;
 
   return (
-    <div className="feed">
-      {/* Product + seller header */}
-      <div className="feed-product">
-        <div className="feed-product-row">
-          <div className="feed-product-name">{result.product.brand} · {result.product.name}</div>
-          <span className="feed-model-badge">GPT-4o</span>
+    <section className={`decision-card ${result.verdict}`}>
+      <div className="decision-head">
+        <div className="decision-mark">
+          <span>{result.verdict === 'AVOID' ? '!' : result.verdict === 'CAUTION' ? '?' : '✓'}</span>
         </div>
-        <div className="feed-product-seller">
-          @{result.seller.handle} · {result.seller.platform} · {result.seller.accountAgeDays}d old
+        <div className="decision-main">
+          <div className="decision-title">{decision.title}</div>
+          <div className="decision-copy">{decision.copy}</div>
         </div>
+        <div className="decision-score">{decision.score}</div>
       </div>
 
-      {/* Stats block */}
-      <div className="feed-stats">
-        <div className="feed-stat">
-          <div className="feed-stat-label">Risk signals</div>
-          <div className="feed-stat-value">
-            <span className={`feed-stat-num ${result.verdict}`}>
-              {result.signals.filter(s => s.risk !== 'GREEN').length}
-            </span>
-            <span className="feed-stat-sub">/ {result.signals.length}</span>
-          </div>
-        </div>
-        <div className="feed-stat">
-          <div className="feed-stat-label">Trust Score</div>
-          <div className="feed-stat-value">
-            <span className={`feed-stat-num ${result.verdict}`}>{score}</span>
-            <span className="feed-stat-sub">/10</span>
-          </div>
-        </div>
-      </div>
-      <div className={`feed-verdict ${result.verdict}`}>
-        {result.verdict}
-        <span className="feed-verdict-conf">
-          {certaintyLabel(result.confidence)} · {Math.round(result.confidence * 100)}%
-        </span>
+      <div className="decision-context">
+        <div className="decision-product">{result.product.brand} · {result.product.name}</div>
+        <div className="decision-seller">@{result.seller.handle} · {result.seller.platform}</div>
       </div>
 
-      {/* BEAT CTA */}
-      {result.beat && result.verdict !== 'TRUST' && (
-        <div className="feed-beat" onClick={openBeat} role="button">
-          <div className="feed-beat-label">↪ Better deal</div>
-          <div className="feed-beat-line">
-            <strong>{result.beat.price}</strong> from {result.beat.seller}
-            <span className="feed-beat-arrow">→</span>
+      {result.triggerClaim && (
+        <div className={`decision-trigger ${result.triggerClaim.risk}`}>
+          <span>Claim heard</span>
+          <strong>"{result.triggerClaim.text}"</strong>
+        </div>
+      )}
+
+      <div className="decision-lens">
+        <span>{focusLens.title}</span>
+        <p>{focusLens.copy}</p>
+      </div>
+
+      {focusLens.reasons.length > 0 && (
+        <div className="decision-section">
+          <div className="decision-section-label">{result.verdict === 'TRUST' ? 'Key check' : 'Why'}</div>
+          <div className="reason-list">
+            {focusLens.reasons.map((reason, reasonIndex) => (
+              <div key={`${intent}-${reason.signal.key}-${reasonIndex}`} className={`reason-item ${reason.signal.risk}`}>
+                <span>{reason.label}</span>
+                <p>{reason.copy}</p>
+              </div>
+            ))}
           </div>
         </div>
       )}
 
-      {/* Timestamped detection feed */}
-      <div className="feed-list">
-        {ordered.map((s, i) => {
-          const ts = fakeTimestamp(i);
-          const key = `${result.generatedAt}-${s.key}`;
-          const isOpen = expanded.has(key);
-          return (
-            <div key={key} className={`feed-row ${s.risk}`} onClick={() => toggle(key)}>
-              <div className="feed-row-head">
-                <span className="feed-ts">{ts}</span>
-                {s.label && s.label.trim() && (
-                  <span className="feed-row-label">("{s.label}"):</span>
-                )}
-                <span className={`feed-row-finding ${s.risk !== 'GREEN' ? 'quoted' : ''}`}>
-                  {s.finding}
-                </span>
-              </div>
-              {isOpen && s.receipts.length > 0 && (
-                <ul className="feed-row-receipts">
-                  {s.receipts.map((r, ri) => <li key={ri}>{r}</li>)}
-                </ul>
-              )}
-              {s.sources && s.sources.length > 0 && (
-                <div className="feed-row-sources">
-                  {s.sources.slice(0, 4).map((url, si) => (
-                    <a
-                      key={si}
-                      href={url}
-                      onClick={e => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        window.auntie.openExternal(url);
-                      }}
-                    >
-                      Source {si + 1}
-                    </a>
-                  ))}
-                </div>
-              )}
-            </div>
-          );
-        })}
+      <div className="decision-section">
+        <div className="decision-section-label">Next</div>
+        <div className="next-actions">
+          {primaryAction && (
+            <button
+              type="button"
+              className="next-primary"
+              onClick={() => {
+                if (primaryAction.url) auntie.openExternal(primaryAction.url);
+              }}
+            >
+              {primaryAction.label}
+            </button>
+          )}
+        </div>
       </div>
 
-      {/* JSON toggle (agent-bridge view) */}
-      <button className="json-toggle" onClick={() => setShowJson(v => !v)}>
-        {showJson ? '↑ Hide' : '⌘'} view as agent JSON
-      </button>
-      {showJson && <pre className="json-view">{JSON.stringify(toAgentJson(result), null, 2)}</pre>}
-    </div>
+      {result.beat && result.verdict !== 'TRUST' && (
+        <button className="beat-strip" onClick={openBeat} type="button">
+          <span>Better option</span>
+          <span>
+            <strong>{result.beat.price}</strong> from {result.beat.seller}
+          </span>
+        </button>
+      )}
+
+      <details className="read-more">
+        <summary>Read more</summary>
+        <div className="read-more-meta">
+          {intentSummary}
+        </div>
+        {secondaryActions.length > 0 && (
+          <div className="read-more-actions">
+            {secondaryActions.map((action, i) => (
+              <button
+                key={`${action.kind}-${i}`}
+                type="button"
+                className="next-secondary"
+                onClick={() => {
+                  if (action.url) auntie.openExternal(action.url);
+                }}
+              >
+                {action.label}
+              </button>
+            ))}
+          </div>
+        )}
+        <div className="read-more-meta">
+          {certaintyLabel(result.confidence)} · {Math.round(result.confidence * 100)}% · {riskSignalCount} risk signals
+        </div>
+        <div className="evidence-list">
+          {ordered.map((signal, signalIndex) => {
+            const key = `${result.generatedAt}-${signal.key}-${signalIndex}`;
+            const isOpen = expanded.has(key);
+            return (
+              <div key={key} className={`evidence-row ${signal.risk}`}>
+                <button type="button" onClick={() => toggle(key)}>
+                  <span>{signal.label}</span>
+                  <strong>{signal.finding}</strong>
+                </button>
+                {isOpen && signal.receipts.length > 0 && (
+                  <ul>
+                    {signal.receipts.map((receipt, ri) => <li key={ri}>{receipt}</li>)}
+                  </ul>
+                )}
+                {signal.sources && signal.sources.length > 0 && (
+                  <div className="evidence-sources">
+                    {signal.sources.slice(0, 4).map((url, si) => (
+                      <a
+                        key={si}
+                        href={url}
+                        onClick={event => {
+                          event.preventDefault();
+                          auntie.openExternal(url);
+                        }}
+                      >
+                        Source {si + 1}
+                      </a>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+        <button className="json-toggle" onClick={() => setShowJson(v => !v)}>
+          {showJson ? 'Hide agent JSON' : 'View agent JSON'}
+        </button>
+        <button
+          className="json-toggle"
+          onClick={() => navigator.clipboard.writeText(JSON.stringify(result, null, 2))}
+        >
+          Copy report
+        </button>
+        {showJson && <pre className="json-view">{JSON.stringify(toAgentJson(result), null, 2)}</pre>}
+      </details>
+    </section>
   );
 }
