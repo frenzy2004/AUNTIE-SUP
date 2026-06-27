@@ -298,11 +298,11 @@ button { font-family: inherit; }
 
 .focus-control {
   display: grid;
-  grid-template-columns: auto 142px minmax(0, 1fr);
+  grid-template-columns: auto 128px minmax(0, 1fr);
   align-items: center;
-  gap: 9px;
-  min-height: 58px;
-  padding: 8px 10px;
+  gap: 8px;
+  min-height: 48px;
+  padding: 7px 9px;
   border-radius: 8px;
   border: 0.5px solid var(--border);
   background: rgba(255, 255, 255, 0.035);
@@ -320,9 +320,9 @@ button { font-family: inherit; }
   text-transform: uppercase;
 }
 .focus-barrel {
-  height: 42px;
+  height: 34px;
   display: grid;
-  grid-template-columns: 18px minmax(0, 1fr) 18px;
+  grid-template-columns: 16px minmax(0, 1fr) 16px;
   align-items: center;
   gap: 4px;
   border-radius: 8px;
@@ -334,8 +334,8 @@ button { font-family: inherit; }
   overflow: hidden;
 }
 .focus-spin {
-  width: 18px;
-  height: 42px;
+  width: 16px;
+  height: 34px;
   border: 0;
   background: transparent;
   color: var(--text-muted);
@@ -348,7 +348,7 @@ button { font-family: inherit; }
 }
 .focus-wheel {
   position: relative;
-  height: 42px;
+  height: 34px;
   perspective: 140px;
   animation: barrelSettle 0.24s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
@@ -358,9 +358,9 @@ button { font-family: inherit; }
 }
 .focus-option {
   position: absolute;
-  inset: 9px 0 auto;
+  inset: 6px 0 auto;
   width: 100%;
-  height: 24px;
+  height: 22px;
   border: 0;
   border-radius: 6px;
   background: transparent;
@@ -376,7 +376,7 @@ button { font-family: inherit; }
 }
 .focus-option.prev {
   opacity: 0.45;
-  transform: translateY(-15px) rotateX(58deg) scale(0.92);
+  transform: translateY(-12px) rotateX(58deg) scale(0.92);
 }
 .focus-option.active {
   color: #ede9fe;
@@ -386,7 +386,7 @@ button { font-family: inherit; }
 }
 .focus-option.next {
   opacity: 0.45;
-  transform: translateY(15px) rotateX(-58deg) scale(0.92);
+  transform: translateY(12px) rotateX(-58deg) scale(0.92);
 }
 .focus-option:hover {
   color: var(--text);
@@ -395,7 +395,7 @@ button { font-family: inherit; }
   min-width: 0;
   color: var(--text-muted);
   font-size: 10.5px;
-  line-height: 1.35;
+  line-height: 1.25;
   overflow: hidden;
   text-overflow: ellipsis;
   display: -webkit-box;
@@ -1028,8 +1028,8 @@ button { font-family: inherit; }
 .decision-card {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 13px;
+  gap: 10px;
+  padding: 12px;
   border-radius: 10px;
   border: 0.5px solid var(--border);
   background: rgba(255, 255, 255, 0.045);
@@ -1049,13 +1049,13 @@ button { font-family: inherit; }
 }
 .decision-head {
   display: grid;
-  grid-template-columns: 34px minmax(0, 1fr) auto;
+  grid-template-columns: 30px minmax(0, 1fr) auto;
   align-items: center;
   gap: 10px;
 }
 .decision-mark {
-  width: 34px;
-  height: 34px;
+  width: 30px;
+  height: 30px;
   border-radius: 50%;
   display: grid;
   place-items: center;
@@ -1071,14 +1071,14 @@ button { font-family: inherit; }
 }
 .decision-title {
   color: var(--text);
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 800;
   line-height: 1.15;
 }
 .decision-copy {
   margin-top: 3px;
   color: var(--text-meta);
-  font-size: 11px;
+  font-size: 10.5px;
   line-height: 1.35;
 }
 .decision-score {
@@ -1093,7 +1093,7 @@ button { font-family: inherit; }
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding-bottom: 10px;
+  padding-bottom: 8px;
   border-bottom: 0.5px solid var(--border);
 }
 .decision-product {
@@ -1143,8 +1143,8 @@ button { font-family: inherit; }
 }
 .decision-lens {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: baseline;
+  grid-template-columns: 1fr;
+  align-items: start;
   gap: 8px;
 }
 .decision-lens span,
@@ -1159,7 +1159,7 @@ button { font-family: inherit; }
   margin: 0;
   min-width: 0;
   color: var(--text-dim);
-  font-size: 11px;
+  font-size: 10.5px;
   line-height: 1.4;
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -1178,7 +1178,7 @@ button { font-family: inherit; }
 }
 .reason-item {
   display: grid;
-  grid-template-columns: 76px minmax(0, 1fr);
+  grid-template-columns: 70px minmax(0, 1fr);
   align-items: baseline;
   gap: 8px;
 }
@@ -1197,7 +1197,7 @@ button { font-family: inherit; }
 .reason-item p {
   margin: 0;
   color: var(--text);
-  font-size: 11.5px;
+  font-size: 11px;
   line-height: 1.38;
   display: -webkit-box;
   -webkit-line-clamp: 2;

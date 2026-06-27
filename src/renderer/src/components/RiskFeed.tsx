@@ -44,15 +44,15 @@ function decisionCopy(result: VerdictResult, score: number) {
     };
   }
   return {
-    title: 'Looks reasonable',
-    copy: 'The checked evidence does not show a major trust issue.',
+    title: 'Looks okay',
+    copy: 'No major issue found in this check.',
     score: `${score}/10 trust`
   };
 }
 
 function riskLabel(risk: VerdictResult['signals'][number]['risk']) {
   if (risk === 'RED') return 'High';
-  if (risk === 'YELLOW') return 'Watch';
+  if (risk === 'YELLOW') return 'Note';
   return 'Clear';
 }
 
@@ -150,18 +150,21 @@ function buildFocusLens(
       return true;
     });
     const extra = fallbackSignals(ordered, used, 2 - primary.length).map(signal => ({
-      label: riskLabel(signal.risk),
+      label: signal.label || riskLabel(signal.risk),
       signal,
       copy: compactFinding(signal)
     }));
-    return { ...lens, reasons: [...primary, ...extra].slice(0, 2) };
+    const cap = result.verdict === 'TRUST' ? 1 : 2;
+    return { ...lens, reasons: [...primary, ...extra].slice(0, cap) };
   };
 
   if (intent === 'best_price') {
     return withFallback(
       {
         title: 'Price sanity',
-        copy: result.beat
+        copy: result.verdict === 'TRUST'
+          ? 'Price and deal context look acceptable from the evidence checked.'
+          : result.beat
           ? `This view compares the deal against market price and verified alternatives like ${result.beat.seller}.`
           : 'This view looks for too-good-to-be-true pricing before seller reputation.'
       },
@@ -178,11 +181,13 @@ function buildFocusLens(
     return withFallback(
       {
         title: 'Safety proof',
-        copy: 'This view prioritizes medical, certification, and regulated-product claims over general deal quality.'
+        copy: result.verdict === 'TRUST'
+          ? 'No major safety or certification red flag found in this check.'
+          : 'This view prioritizes medical, certification, and regulated-product claims over general deal quality.'
       },
       [
-        from('Claims', 'claims'),
-        from('Proof', 'provenance')
+        from('Safety claim', 'claims'),
+        from('Public proof', 'provenance')
       ]
     );
   }
@@ -191,7 +196,9 @@ function buildFocusLens(
     return withFallback(
       {
         title: 'Warranty and recourse',
-        copy: 'This view asks whether you can get help, return the item, or prove coverage if the product fails.'
+        copy: result.verdict === 'TRUST'
+          ? 'Seller recourse looks acceptable; keep checkout and warranty proof.'
+          : 'This view asks whether you can get help, return the item, or prove coverage if the product fails.'
       },
       [
         from('Recourse', 'footprint'),
@@ -204,7 +211,9 @@ function buildFocusLens(
     return withFallback(
       {
         title: 'Seller trust',
-        copy: 'This view judges the seller behavior: footprint, buyer complaints, and repeated scripts.'
+        copy: result.verdict === 'TRUST'
+          ? 'Seller signals look acceptable from the sources checked.'
+          : 'This view judges the seller behavior: footprint, buyer complaints, and repeated scripts.'
       },
       [
         from('Footprint', 'footprint'),
@@ -217,7 +226,9 @@ function buildFocusLens(
   return withFallback(
     {
       title: 'Authenticity proof',
-      copy: 'This view checks whether the seller has proof the product is real, not just convincing sales claims.'
+      copy: result.verdict === 'TRUST'
+        ? 'No major authenticity red flag found in the checked evidence.'
+        : 'This view checks whether the seller has proof the product is real, not just convincing sales claims.'
     },
     [
       from('Proof trail', 'provenance'),
@@ -227,6 +238,18 @@ function buildFocusLens(
 }
 
 function buildFocusAction(intent: BuyerIntent, result: VerdictResult): FocusAction {
+  if (result.verdict === 'TRUST') {
+    if (intent === 'health_safety') return { label: 'Check label once' };
+    if (intent === 'warranty') return { label: 'Keep receipt' };
+    if (intent === 'seller_trust') return { label: 'Use platform checkout' };
+    if (intent === 'best_price') {
+      return result.beat?.url
+        ? { label: `Compare ${result.beat.seller}`, url: result.beat.url }
+        : { label: 'Proceed at listed price' };
+    }
+    return { label: 'Use platform checkout' };
+  }
+
   if (intent === 'best_price') {
     return result.beat?.url
       ? { label: `Compare ${result.beat.seller}`, url: result.beat.url }
@@ -302,17 +325,19 @@ export function RiskFeed({ result, index, activeIntent }: Props) {
         <p>{focusLens.copy}</p>
       </div>
 
-      <div className="decision-section">
-        <div className="decision-section-label">Why</div>
-        <div className="reason-list">
-          {focusLens.reasons.map((reason, reasonIndex) => (
-            <div key={`${intent}-${reason.signal.key}-${reasonIndex}`} className={`reason-item ${reason.signal.risk}`}>
-              <span>{reason.label}</span>
-              <p>{reason.copy}</p>
-            </div>
-          ))}
+      {focusLens.reasons.length > 0 && (
+        <div className="decision-section">
+          <div className="decision-section-label">{result.verdict === 'TRUST' ? 'Key check' : 'Why'}</div>
+          <div className="reason-list">
+            {focusLens.reasons.map((reason, reasonIndex) => (
+              <div key={`${intent}-${reason.signal.key}-${reasonIndex}`} className={`reason-item ${reason.signal.risk}`}>
+                <span>{reason.label}</span>
+                <p>{reason.copy}</p>
+              </div>
+            ))}
+          </div>
         </div>
-      </div>
+      )}
 
       <div className="decision-section">
         <div className="decision-section-label">Next</div>
