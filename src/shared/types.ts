@@ -2,6 +2,12 @@
 
 export type Risk = 'GREEN' | 'YELLOW' | 'RED';
 export type Verdict = 'TRUST' | 'CAUTION' | 'AVOID';
+export type BuyerIntent =
+  | 'authenticity'
+  | 'best_price'
+  | 'health_safety'
+  | 'warranty'
+  | 'seller_trust';
 
 export type ClaimCategory =
   | 'medical'
@@ -28,6 +34,13 @@ export type SignalKey =
   | 'script'
   | 'footprint';
 
+export interface IntentProfile {
+  intent: BuyerIntent;
+  label: string;
+  shortLabel: string;
+  prioritySignals: SignalKey[];
+}
+
 export interface Signal {
   key: SignalKey;
   label: string;
@@ -45,6 +58,9 @@ export interface VerdictResult {
   product: ProductIdentity;
   seller: SellerSummary;
   beat?: BetterDeal;
+  intent?: BuyerIntent;
+  intentSummary?: string;
+  nextActions?: NextAction[];
   generatedAt: number;
 }
 
@@ -73,6 +89,12 @@ export interface BetterDeal {
   url: string;
   verified: boolean;
   savingsVsSeller?: string;
+}
+
+export interface NextAction {
+  label: string;
+  kind: 'ask_seller' | 'compare' | 'avoid' | 'verify' | 'open_source';
+  url?: string;
 }
 
 // What the offline scrape script writes to data/cache/<slug>.json.
@@ -137,9 +159,12 @@ export interface AuntieSettings {
 export interface AgentVerdict {
   verdict: Verdict;
   confidence: number;
+  buyer_intent?: BuyerIntent;
+  intent_summary?: string;
   product: ProductIdentity;
   seller_handle: string;
   reasons: Array<{ signal: SignalKey; risk: Risk; finding: string }>;
   recommendation: 'PROCEED' | 'REVIEW' | 'ABORT';
+  next_actions?: string[];
   better_deal_url?: string;
 }

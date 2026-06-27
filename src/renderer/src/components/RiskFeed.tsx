@@ -1,5 +1,12 @@
 import React, { useState } from 'react';
 import type { VerdictResult, AgentVerdict, SignalKey, Risk } from '@shared/types';
+import {
+  DEFAULT_BUYER_INTENT,
+  INTENT_PROFILES,
+  buildNextActions,
+  sortSignalsForIntent,
+  summarizeIntentVerdict
+} from '@shared/intents';
 
 interface Props {
   result: VerdictResult;
@@ -30,12 +37,15 @@ function toAgentJson(r: VerdictResult): AgentVerdict {
   return {
     verdict: r.verdict,
     confidence: Number(r.confidence.toFixed(2)),
+    buyer_intent: r.intent,
+    intent_summary: r.intentSummary,
     product: r.product,
     seller_handle: r.seller.handle,
     reasons: r.signals
       .filter(s => s.risk !== 'GREEN')
       .map(s => ({ signal: s.key as SignalKey, risk: s.risk as Risk, finding: s.finding })),
     recommendation: r.verdict === 'AVOID' ? 'ABORT' : r.verdict === 'CAUTION' ? 'REVIEW' : 'PROCEED',
+    next_actions: r.nextActions?.map(action => action.label),
     better_deal_url: r.beat?.url
   };
 }
@@ -44,6 +54,12 @@ export function RiskFeed({ result, index }: Props) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [showJson, setShowJson] = useState(false);
   const score = trustScore(result.signals);
+  const intent = result.intent ?? DEFAULT_BUYER_INTENT;
+  const intentProfile = INTENT_PROFILES[intent];
+  const intentSummary = result.intentSummary || summarizeIntentVerdict(intent, result.signals);
+  const nextActions = result.nextActions?.length
+    ? result.nextActions
+    : buildNextActions(intent, result.verdict, result.signals, result.beat);
 
   const toggle = (key: string) => {
     setExpanded(prev => {
@@ -57,11 +73,7 @@ export function RiskFeed({ result, index }: Props) {
     if (result.beat?.url) window.auntie.openExternal(result.beat.url);
   };
 
-  // Risk-colored signals first, GREEN last — the "what to look at" order.
-  const ordered = [...result.signals].sort((a, b) => {
-    const w = { RED: 0, YELLOW: 1, GREEN: 2 } as const;
-    return w[a.risk] - w[b.risk];
-  });
+  const ordered = sortSignalsForIntent(result.signals, intent);
 
   return (
     <div className="feed">
@@ -74,6 +86,11 @@ export function RiskFeed({ result, index }: Props) {
         <div className="feed-product-seller">
           @{result.seller.handle} · {result.seller.platform} · {result.seller.accountAgeDays}d old
         </div>
+      </div>
+
+      <div className="feed-intent">
+        <div className="feed-intent-label">For {intentProfile.label}</div>
+        <div className="feed-intent-copy">{intentSummary}</div>
       </div>
 
       {/* Stats block */}
@@ -110,6 +127,24 @@ export function RiskFeed({ result, index }: Props) {
             <strong>{result.beat.price}</strong> from {result.beat.seller}
             <span className="feed-beat-arrow">→</span>
           </div>
+        </div>
+      )}
+
+      {nextActions.length > 0 && (
+        <div className="feed-actions">
+          {nextActions.map((action, i) => (
+            <button
+              key={`${action.kind}-${i}`}
+              type="button"
+              className="feed-action"
+              onClick={() => {
+                if (action.url) window.auntie.openExternal(action.url);
+              }}
+              title={action.url ? 'Open related evidence' : action.kind.replace('_', ' ')}
+            >
+              {action.label}
+            </button>
+          ))}
         </div>
       )}
 

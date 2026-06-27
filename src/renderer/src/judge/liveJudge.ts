@@ -16,6 +16,8 @@
 import Exa from 'exa-js';
 import OpenAI from 'openai';
 import type {
+  BuyerIntent,
+  NextAction,
   Signal,
   Risk,
   ProductIdentity,
@@ -24,6 +26,12 @@ import type {
   BetterDeal
 } from '@shared/types';
 import { MODELS } from '@shared/config';
+import {
+  DEFAULT_BUYER_INTENT,
+  INTENT_PROFILES,
+  buildNextActions,
+  summarizeIntentVerdict
+} from '@shared/intents';
 import { fuse } from '@judge/score';
 
 // Curated SG + MY shopping/retail domains. Price comparables MUST come from
@@ -240,6 +248,8 @@ interface ReasonOut {
     confidence: number;
     sources: string[];
   }>;
+  intentSummary?: string;
+  nextActions?: NextAction[];
   beat?: BetterDeal;
 }
 
@@ -248,12 +258,18 @@ async function reasonOverExa(
   product: ProductIdentity,
   sellerHandle: string | undefined,
   visiblePrice: string | undefined,
-  bundle: ExaQueryBundle
+  bundle: ExaQueryBundle,
+  intent: BuyerIntent
 ): Promise<ReasonOut> {
   const client = new OpenAI({ apiKey: openaiKey, dangerouslyAllowBrowser: true });
+  const intentProfile = INTENT_PROFILES[intent];
   const sys = [
     'You are AUNTIE — a SEA shopping-safety auntie. You assess commerce risk from REAL web evidence.',
     'Input has been structured for you. Do NOT invent prices, URLs, or claims. Every receipt must quote a fact present in the bundle.',
+    '',
+    `Buyer intent: ${intentProfile.label}. Prioritize these signal categories when explaining the verdict: ${intentProfile.prioritySignals.join(', ')}.`,
+    'Write `intentSummary` as one concise sentence beginning with "For <intent>:" and explain how the top evidence affects this buyer goal.',
+    'Write `nextActions` as 1-3 practical buyer actions with labels only when useful. Use kinds: ask_seller, compare, avoid, verify, open_source. Include a URL only if it appears in the evidence bundle or beat.',
     '',
     'Categories you may emit (skip a category if not assessable — mark its risk GREEN with "Not assessable from web evidence (needs <X>)"):',
     '  price       — Compare visiblePrice with bundle.marketStats / bundle.pricesExtracted. RED if seller ≤ -40% vs median; YELLOW -20% to -40%; GREEN otherwise. Quote specific competitor prices + URLs in receipts.',
@@ -267,13 +283,15 @@ async function reasonOverExa(
     '',
     'Emit a `beat` object IFF you can find a verified-seller listing for the same product at a sensible price in bundle.priceComparables: { product, price (string with currency), seller, url, verified: true, savingsVsSeller (text) }.',
     '',
-    'Respond strict JSON: { "signals": [...], "beat": {...} | null }.'
+    'Respond strict JSON: { "signals": [...], "intentSummary": string, "nextActions": [...], "beat": {...} | null }.'
   ].join('\n');
 
   const userPayload = {
     product,
     sellerHandle: sellerHandle ?? null,
     visiblePrice: visiblePrice ?? null,
+    buyerIntent: intent,
+    prioritySignals: intentProfile.prioritySignals,
     bundle
   };
 
@@ -293,6 +311,8 @@ async function reasonOverExa(
     const parsed = JSON.parse(content);
     return {
       signals: Array.isArray(parsed.signals) ? parsed.signals : [],
+      intentSummary: typeof parsed.intentSummary === 'string' ? parsed.intentSummary : undefined,
+      nextActions: Array.isArray(parsed.nextActions) ? parsed.nextActions : undefined,
       beat: parsed.beat ?? undefined
     };
   } catch (err) {
@@ -304,13 +324,15 @@ async function reasonOverExa(
 export async function runLiveJudge(opts: {
   product: ProductIdentity;
   sellerHandle?: string;
+  intent?: BuyerIntent;
   openaiKey: string;
   exaKey: string;
 }): Promise<VerdictResult> {
   const { product, sellerHandle, openaiKey, exaKey } = opts;
+  const intent = opts.intent ?? DEFAULT_BUYER_INTENT;
   const visibleClaim = product.visibleClaims?.[0];
   const bundle = await runExaSearches(exaKey, product, sellerHandle, visibleClaim);
-  const reasoned = await reasonOverExa(openaiKey, product, sellerHandle, product.visiblePrice, bundle);
+  const reasoned = await reasonOverExa(openaiKey, product, sellerHandle, product.visiblePrice, bundle, intent);
 
   const labels: Record<string, string> = {
     price: 'Price anomaly',
@@ -343,12 +365,20 @@ export async function runLiveJudge(opts: {
   };
 
   const { verdict, confidence } = fuse(signals);
+  const intentSummary = reasoned.intentSummary?.trim() || summarizeIntentVerdict(intent, signals);
+  const nextActions = reasoned.nextActions?.length
+    ? reasoned.nextActions.slice(0, 3)
+    : buildNextActions(intent, verdict, signals, reasoned.beat);
+
   return {
     verdict,
     confidence,
     signals,
     product,
     seller,
+    intent,
+    intentSummary,
+    nextActions,
     beat: reasoned.beat,
     generatedAt: Date.now()
   };

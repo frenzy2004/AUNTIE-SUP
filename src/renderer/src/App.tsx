@@ -1,5 +1,6 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import type { AuntieSettings, VerdictResult } from '@shared/types';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { AuntieSettings, BuyerIntent, VerdictResult } from '@shared/types';
+import { DEFAULT_BUYER_INTENT } from '@shared/intents';
 import { identifyProduct } from './see/identify';
 import { runLiveJudge } from './judge/liveJudge';
 import { startDesktopAudioCapture, type CaptureHandle } from './listen/capture';
@@ -10,8 +11,10 @@ import { RiskFeed } from './components/RiskFeed';
 import { TranscriptFeed, type TranscriptLine } from './components/TranscriptFeed';
 import { ClaimsBullets, type ClaimBullet } from './components/ClaimsBullets';
 import { SettingsDrawer } from './components/SettingsDrawer';
+import { IntentSelector } from './components/IntentSelector';
+import { TrustNudge } from './components/TrustNudge';
 
-type PendingState = 'idle' | 'identifying' | 'judging' | 'no-match';
+type PendingState = 'idle' | 'identifying' | 'judging' | 'no-match' | 'error';
 
 function newId() { return `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`; }
 
@@ -19,9 +22,13 @@ export function App() {
   const [settings, setSettings] = useState<AuntieSettings>({});
   const [verdicts, setVerdicts] = useState<VerdictResult[]>([]);
   const [pending, setPending] = useState<PendingState>('idle');
+  const [seeError, setSeeError] = useState<string | null>(null);
   const [transcript, setTranscript] = useState<TranscriptLine[]>([]);
   const [listening, setListening] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [buyerIntent, setBuyerIntent] = useState<BuyerIntent>(DEFAULT_BUYER_INTENT);
+  const [dismissedNudgeId, setDismissedNudgeId] = useState<string | null>(null);
+  const [demoNudgeActive, setDemoNudgeActive] = useState(false);
 
   const [collapsed, setCollapsed] = useState(false);
   const [bullets, setBullets] = useState<ClaimBullet[]>([]);
@@ -39,6 +46,23 @@ export function App() {
   const worstVerdict = verdicts.find(v => v.verdict === 'AVOID')
     ?? verdicts.find(v => v.verdict === 'CAUTION')
     ?? verdicts[0];
+  const snipIsLoading = pending === 'identifying' || pending === 'judging';
+  const latestActionableClaim = useMemo(
+    () => [...bullets].reverse().find(b => b.risk !== 'GREEN') ?? null,
+    [bullets]
+  );
+  const showTrustNudge =
+    (listening || demoNudgeActive) &&
+    pending === 'idle' &&
+    latestActionableClaim !== null &&
+    latestActionableClaim.id !== dismissedNudgeId;
+
+  const startProductSnip = useCallback(() => {
+    setSeeError(null);
+    setDemoNudgeActive(false);
+    if (latestActionableClaim) setDismissedNudgeId(latestActionableClaim.id);
+    window.auntie.startSnip();
+  }, [latestActionableClaim]);
 
   useEffect(() => {
     window.auntie.getSettings().then(s => {
@@ -59,6 +83,7 @@ export function App() {
         setShowSettings(true);
         return;
       }
+      setSeeError(null);
       setPending('identifying');
       try {
         const identity = await identifyProduct(dataUrl, settings.openaiKey);
@@ -68,6 +93,7 @@ export function App() {
         const result = await runLiveJudge({
           product: identity,
           sellerHandle: undefined, // visible seller name not consistently present in screenshot
+          intent: buyerIntent,
           openaiKey: settings.openaiKey,
           exaKey: settings.exaKey
         });
@@ -76,11 +102,12 @@ export function App() {
         setPending('idle');
       } catch (err) {
         console.error('[SEE] failed', err);
-        setPending('idle');
+        setSeeError(err instanceof Error ? err.message : 'Could not analyze this snip.');
+        setPending('error');
       }
     });
     return () => { off(); };
-  }, [settings.openaiKey, settings.exaKey]);
+  }, [buyerIntent, settings.openaiKey, settings.exaKey]);
 
   // ─── LISTEN: hotkey from main toggles listening ────────────────────────
   const toggleListen = useCallback(async () => {
@@ -150,10 +177,32 @@ export function App() {
   // ─── Demo trigger (Alt+Shift+D): live judge on a hardcoded test product ──
   // Real Exa + GPT calls — no cached/planted data.
   const runDemo = useCallback(async () => {
+    const demoText = 'Today only, 100% original Dyson, FDA approved technology, cheapest in Singapore.';
+    const hits = hitsAnyKeyword(demoText);
+    const utteranceId = `demo-${newId()}`;
+    const pending: ClaimBullet[] = hits.map((cat, i) => ({
+      id: `${utteranceId}-${i}`,
+      utterance: demoText,
+      category: cat,
+      risk: categoryToRisk(cat),
+      status: 'pending'
+    }));
+    setBullets(b => [...b.slice(-10 + pending.length), ...pending]);
+    setDismissedNudgeId(null);
+    setDemoNudgeActive(true);
+
     if (!settings.openaiKey || !settings.exaKey) {
       setShowSettings(true);
       return;
     }
+    await new Promise(r => setTimeout(r, 650));
+    setBullets(b =>
+      b.map(bullet =>
+        bullet.id.startsWith(utteranceId)
+          ? { ...bullet, status: 'resolved' as const }
+          : bullet
+      )
+    );
     setPending('judging');
     try {
       const result = await runLiveJudge({
@@ -165,6 +214,7 @@ export function App() {
           visibleClaims: ['100% Original Dyson', 'Cheapest in Singapore today only', 'FDA approved technology']
         },
         sellerHandle: 'BeautyDeals_SG',
+        intent: buyerIntent,
         openaiKey: settings.openaiKey,
         exaKey: settings.exaKey
       });
@@ -173,9 +223,10 @@ export function App() {
     } catch (err) {
       console.error('[demo] live judge failed', err);
     } finally {
+      setDemoNudgeActive(false);
       setPending('idle');
     }
-  }, [settings.openaiKey, settings.exaKey]);
+  }, [buyerIntent, settings.openaiKey, settings.exaKey]);
 
   useEffect(() => {
     const off = window.auntie.onDemoTrigger(() => { void runDemo(); });
@@ -263,13 +314,15 @@ export function App() {
       </header>
 
       <div className="actions">
-        <button className="action-btn primary" onClick={() => window.auntie.startSnip()}>
+        <button className="action-btn primary" onClick={startProductSnip}>
           ✂ Snip product <span className="kbd">⌥⇧S</span>
         </button>
         <button className={`action-btn ${listening ? 'primary' : ''}`} onClick={toggleListen}>
           {listening ? '■ Stop listening' : '◎ Listen'} <span className="kbd">⌥⇧L</span>
         </button>
       </div>
+
+      <IntentSelector value={buyerIntent} onChange={setBuyerIntent} />
 
       {listening && (
         <div style={{ padding: '0 18px', display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -279,14 +332,39 @@ export function App() {
       )}
 
       <div className="body">
-        {pending !== 'idle' && (
+        {showTrustNudge && latestActionableClaim && (
+          <TrustNudge
+            claim={latestActionableClaim}
+            intent={buyerIntent}
+            onVerify={startProductSnip}
+            onDismiss={() => setDismissedNudgeId(latestActionableClaim.id)}
+          />
+        )}
+
+        {snipIsLoading && (
           <div className="card">
             <div className="shimmer" style={{ height: 16, width: '60%' }} />
             <div className="shimmer" style={{ height: 12, width: '85%' }} />
             <div className="shimmer" style={{ height: 12, width: '70%' }} />
             <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
-              {pending === 'identifying' ? 'Identifying product…' : 'Asking the web (Exa + GPT-4o)…'}
+              {pending === 'identifying' ? 'Reading product and visible claims...' : 'Checking seller, price, and claims...'}
             </div>
+          </div>
+        )}
+
+        {pending === 'no-match' && (
+          <div className="card see-status">
+            <div className="see-status-title">No product found</div>
+            <div className="see-status-copy">
+              Try a tighter snip around the product, label, or price tag.
+            </div>
+          </div>
+        )}
+
+        {pending === 'error' && (
+          <div className="card see-status error">
+            <div className="see-status-title">Snip analysis failed</div>
+            <div className="see-status-copy">{seeError}</div>
           </div>
         )}
 
