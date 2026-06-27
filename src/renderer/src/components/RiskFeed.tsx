@@ -87,6 +87,44 @@ function compactFinding(signal: Signal): string {
   return signal.finding.replace(/\s+/g, ' ').trim();
 }
 
+function normalizedFinding(text: string): string {
+  return text.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+function isGenericFinding(text: string): boolean {
+  const normalized = normalizedFinding(text);
+  return normalized.includes('no specific claims about the product are verified') ||
+    normalized.includes('not assessable from web evidence') ||
+    normalized.includes('needs tiktok comments scrape') ||
+    normalized.includes('would need cross account caption match');
+}
+
+function signalUsefulness(signal: Signal): number {
+  let score = signal.risk === 'RED' ? 30 : signal.risk === 'YELLOW' ? 20 : 10;
+  if (signal.receipts.length > 0) score += 4;
+  if ((signal.sources?.length ?? 0) > 0) score += 3;
+  if (!isGenericFinding(signal.finding)) score += 8;
+  return score;
+}
+
+function dedupeSignals(signals: Signal[]): Signal[] {
+  const byKey = new Map<SignalKey, Signal>();
+  const seenFindings = new Set<string>();
+
+  for (const signal of signals) {
+    const findingKey = normalizedFinding(signal.finding);
+    if (seenFindings.has(findingKey) && isGenericFinding(signal.finding)) continue;
+    seenFindings.add(findingKey);
+
+    const existing = byKey.get(signal.key);
+    if (!existing || signalUsefulness(signal) > signalUsefulness(existing)) {
+      byKey.set(signal.key, signal);
+    }
+  }
+
+  return [...byKey.values()];
+}
+
 function buildFocusLens(
   intent: BuyerIntent,
   ordered: Signal[],
@@ -104,7 +142,13 @@ function buildFocusLens(
     return { label, signal, copy: copy ?? compactFinding(signal) };
   };
   const withFallback = (lens: Omit<FocusLens, 'reasons'>, reasons: Array<FocusReason | null>): FocusLens => {
-    const primary = reasons.filter(Boolean) as FocusReason[];
+    const seen = new Set<string>();
+    const primary = (reasons.filter(Boolean) as FocusReason[]).filter(reason => {
+      const key = `${reason.signal.key}:${normalizedFinding(reason.copy)}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
     const extra = fallbackSignals(ordered, used, 2 - primary.length).map(signal => ({
       label: riskLabel(signal.risk),
       signal,
@@ -224,8 +268,9 @@ export function RiskFeed({ result, index, activeIntent }: Props) {
     if (result.beat?.url) auntie.openExternal(result.beat.url);
   };
 
-  const ordered = sortSignalsForIntent(result.signals, intent);
+  const ordered = dedupeSignals(sortSignalsForIntent(result.signals, intent));
   const focusLens = buildFocusLens(intent, ordered, result);
+  const riskSignalCount = ordered.filter(signal => signal.risk !== 'GREEN').length;
 
   return (
     <section className={`decision-card ${result.verdict}`}>
@@ -260,8 +305,8 @@ export function RiskFeed({ result, index, activeIntent }: Props) {
       <div className="decision-section">
         <div className="decision-section-label">Why</div>
         <div className="reason-list">
-          {focusLens.reasons.map(reason => (
-            <div key={`${intent}-${reason.signal.key}`} className={`reason-item ${reason.signal.risk}`}>
+          {focusLens.reasons.map((reason, reasonIndex) => (
+            <div key={`${intent}-${reason.signal.key}-${reasonIndex}`} className={`reason-item ${reason.signal.risk}`}>
               <span>{reason.label}</span>
               <p>{reason.copy}</p>
             </div>
@@ -324,11 +369,11 @@ export function RiskFeed({ result, index, activeIntent }: Props) {
           </div>
         )}
         <div className="read-more-meta">
-          {certaintyLabel(result.confidence)} · {Math.round(result.confidence * 100)}% · {result.signals.filter(s => s.risk !== 'GREEN').length} risk signals
+          {certaintyLabel(result.confidence)} · {Math.round(result.confidence * 100)}% · {riskSignalCount} risk signals
         </div>
         <div className="evidence-list">
-          {ordered.map(signal => {
-            const key = `${result.generatedAt}-${signal.key}`;
+          {ordered.map((signal, signalIndex) => {
+            const key = `${result.generatedAt}-${signal.key}-${signalIndex}`;
             const isOpen = expanded.has(key);
             return (
               <div key={key} className={`evidence-row ${signal.risk}`}>

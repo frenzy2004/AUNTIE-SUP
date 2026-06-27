@@ -277,6 +277,46 @@ function sanitizeNextActions(value: unknown): NextAction[] | undefined {
   return actions.length > 0 ? actions.slice(0, 3) : undefined;
 }
 
+function normalizedFinding(text: string): string {
+  return text.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+function isGenericFinding(text: string): boolean {
+  const normalized = normalizedFinding(text);
+  return normalized.includes('no specific claims about the product are verified') ||
+    normalized.includes('not assessable from web evidence') ||
+    normalized.includes('needs tiktok comments scrape') ||
+    normalized.includes('would need cross account caption match');
+}
+
+function signalUsefulness(signal: Signal): number {
+  let score = signal.risk === 'RED' ? 30 : signal.risk === 'YELLOW' ? 20 : 10;
+  if (signal.receipts.length > 0) score += 4;
+  if ((signal.sources?.length ?? 0) > 0) score += 3;
+  if (!isGenericFinding(signal.finding)) score += 8;
+  return score;
+}
+
+function dedupeSignals(signals: Signal[]): Signal[] {
+  const byKey = new Map<Signal['key'], Signal>();
+  const seenGenericFindings = new Set<string>();
+
+  for (const signal of signals) {
+    const findingKey = normalizedFinding(signal.finding);
+    if (isGenericFinding(signal.finding)) {
+      if (seenGenericFindings.has(findingKey)) continue;
+      seenGenericFindings.add(findingKey);
+    }
+
+    const existing = byKey.get(signal.key);
+    if (!existing || signalUsefulness(signal) > signalUsefulness(existing)) {
+      byKey.set(signal.key, signal);
+    }
+  }
+
+  return [...byKey.values()];
+}
+
 async function reasonOverExa(
   openaiKey: string,
   product: ProductIdentity,
@@ -367,7 +407,7 @@ export async function runLiveJudge(opts: {
     script: 'Script reuse'
   };
 
-  const signals: Signal[] = reasoned.signals.map(s => {
+  const signals: Signal[] = dedupeSignals(reasoned.signals.map(s => {
     const lbl = (s.label ?? '').trim();
     return {
       key: s.key,
@@ -378,7 +418,7 @@ export async function runLiveJudge(opts: {
       receipts: Array.isArray(s.receipts) ? s.receipts : [],
       sources: Array.isArray(s.sources) ? s.sources : []
     };
-  });
+  }));
 
   const seller: SellerSummary = {
     handle: sellerHandle || 'unknown',

@@ -1182,6 +1182,9 @@ button { font-family: inherit; }
   align-items: baseline;
   gap: 8px;
 }
+.reason-item:nth-child(n+3) {
+  display: none;
+}
 .reason-item span {
   font-size: 9.5px;
   font-weight: 800;
