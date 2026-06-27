@@ -9,6 +9,7 @@ export interface CaptureHandle {
 
 export interface CaptureOpts {
   onChunk: (pcm: Int16Array) => void;
+  onLevel?: (level: number) => void;
   onError?: (err: Error) => void;
 }
 
@@ -46,10 +47,13 @@ export async function startDesktopAudioCapture(opts: CaptureOpts): Promise<Captu
     const f32 = e.inputBuffer.getChannelData(0);
     const outLen = Math.floor(f32.length / RATIO);
     const out = new Int16Array(outLen);
+    let energy = 0;
     for (let i = 0; i < outLen; i++) {
       const s = Math.max(-1, Math.min(1, f32[Math.floor(i * RATIO)]));
+      energy += s * s;
       out[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
     }
+    opts.onLevel?.(Math.sqrt(energy / Math.max(1, outLen)));
     try { opts.onChunk(out); } catch (err) { opts.onError?.(err as Error); }
   };
 

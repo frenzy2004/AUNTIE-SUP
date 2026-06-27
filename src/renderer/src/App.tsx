@@ -44,6 +44,8 @@ export function App() {
   const [seeError, setSeeError] = useState<string | null>(null);
   const [transcript, setTranscript] = useState<TranscriptLine[]>([]);
   const [listening, setListening] = useState(false);
+  const [listenStatus, setListenStatus] = useState('Idle');
+  const [audioLevel, setAudioLevel] = useState(0);
   const [showSettings, setShowSettings] = useState(false);
   const [buyerIntent, setBuyerIntent] = useState<BuyerIntent>(DEFAULT_BUYER_INTENT);
   const [dismissedNudgeId, setDismissedNudgeId] = useState<string | null>(null);
@@ -57,6 +59,8 @@ export function App() {
   const transcriberRef = useRef<TranscribeHandle | null>(null);
   const dedupeRef = useRef(new ClaimDeduper());
   const lastVerdictRef = useRef<VerdictResult | null>(null);
+  const lastLevelUpdateRef = useRef(0);
+  const listenErrorRef = useRef(false);
 
   const collapse = (next: boolean) => {
     setCollapsed(next);
@@ -183,13 +187,20 @@ export function App() {
       captureRef.current = null;
       transcriberRef.current = null;
       setListening(false);
+      setListenStatus('Idle');
+      setAudioLevel(0);
       return;
     }
     if (!settings.openaiKey) { setShowSettings(true); return; }
     try {
       setTranscript([]);
+      setAudioLevel(0);
+      listenErrorRef.current = false;
+      setListenStatus('Starting audio capture...');
       const transcriber = createTranscriber(settings.openaiKey, {
         onText: async text => {
+          listenErrorRef.current = false;
+          setListenStatus('Caption received');
           setTranscript(t => [
             ...t.slice(-(MAX_TRANSCRIPT_LINES - 1)),
             { id: newId(), text, at: Date.now() }
@@ -222,17 +233,39 @@ export function App() {
             )
           );
           for (const c of claims) addClaimSignal(c.text, c.category);
+        },
+        onError: err => {
+          console.warn('[listen] transcribe error', err);
+          listenErrorRef.current = true;
+          setListenStatus(`Transcription failed: ${err.message}`);
         }
       });
       transcriberRef.current = transcriber;
       const cap = await startDesktopAudioCapture({
-        onChunk: pcm => transcriber.push(pcm),
-        onError: err => console.warn('[listen] capture error', err)
+        onChunk: pcm => {
+          transcriber.push(pcm);
+        },
+        onLevel: level => {
+          if (listenErrorRef.current) return;
+          const now = Date.now();
+          if (now - lastLevelUpdateRef.current < 250) return;
+          lastLevelUpdateRef.current = now;
+          setAudioLevel(level);
+          setListenStatus(level > 0.012 ? 'Audio detected; transcribing...' : 'Waiting for audible speech...');
+        },
+        onError: err => {
+          console.warn('[listen] capture error', err);
+          listenErrorRef.current = true;
+          setListenStatus(`Audio capture failed: ${err.message}`);
+        }
       });
       captureRef.current = cap;
       setListening(true);
+      setListenStatus('Waiting for audible speech...');
     } catch (err) {
       console.error('[LISTEN] failed', err);
+      listenErrorRef.current = true;
+      setListenStatus(`Listen failed: ${(err as Error).message}`);
       alert('Could not start listening: ' + (err as Error).message);
     }
   }, [listening, settings.openaiKey]);
@@ -406,8 +439,17 @@ export function App() {
       </div>
 
       {(listening || transcript.length > 0) && (
-        <details className="live-details">
+        <details className="live-details" open={listening || transcript.length > 0}>
           <summary>Live monitor</summary>
+          <div className="listen-health">
+            <div className="listen-health-row">
+              <span>{listenStatus}</span>
+              <span>{Math.round(Math.min(1, audioLevel) * 100)}%</span>
+            </div>
+            <div className="listen-meter" aria-hidden="true">
+              <span style={{ width: `${Math.round(Math.min(1, audioLevel) * 100)}%` }} />
+            </div>
+          </div>
           <TranscriptFeed lines={transcript} active={listening} />
           {(listening || bullets.length > 0) && <ClaimsBullets bullets={bullets} />}
         </details>

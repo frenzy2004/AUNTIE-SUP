@@ -7,9 +7,9 @@ import OpenAI from 'openai';
 import { MODELS } from '@shared/config';
 
 const SAMPLE_RATE = 16000;
-// 4s chunks: trade off latency vs API cost. ~2-3s round-trip after each
-// chunk completes → user sees text within ~5-6s of speech vs 8-10s at 6s.
-const CHUNK_SECONDS = 4;
+// Short chunks keep captions visibly alive. Accuracy is a bit lower than long
+// chunks, but the overlay needs to prove it is hearing speech quickly.
+const CHUNK_SECONDS = 2;
 const TARGET_SAMPLES = SAMPLE_RATE * CHUNK_SECONDS;
 
 function int16ToWav(pcm: Int16Array, sampleRate: number): Blob {

@@ -492,6 +492,48 @@ button { font-family: inherit; }
 }
 .live-details[open] > summary::before { transform: rotate(0); }
 .live-details .claims { margin-top: 10px; }
+.listen-health {
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  border-radius: 7px;
+  border: 0.5px solid rgba(255, 255, 255, 0.08);
+  background: rgba(0, 0, 0, 0.22);
+}
+.listen-health-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text-dim);
+  font-size: 10.5px;
+  font-weight: 700;
+}
+.listen-health-row span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.listen-health-row span:last-child {
+  color: var(--text-muted);
+  font-family: 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 9.5px;
+}
+.listen-meter {
+  height: 4px;
+  margin-top: 7px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+}
+.listen-meter span {
+  display: block;
+  height: 100%;
+  min-width: 3px;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--trust), var(--accent));
+  transition: width 0.2s ease;
+}
 
 .empty {
   margin-top: 24px;
