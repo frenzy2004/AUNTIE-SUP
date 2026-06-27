@@ -14,14 +14,28 @@ import { TranscriptFeed, type TranscriptLine } from './components/TranscriptFeed
 import { ClaimsBullets, type ClaimBullet } from './components/ClaimsBullets';
 import { SettingsDrawer } from './components/SettingsDrawer';
 import { IntentSelector } from './components/IntentSelector';
-import { IntentBrief } from './components/IntentBrief';
 import { TrustNudge } from './components/TrustNudge';
 import { Mascot, type MascotMood } from './components/Mascot';
 import { auntie } from './bridge';
 
 type PendingState = 'idle' | 'identifying' | 'judging' | 'no-match' | 'no-cache' | 'error';
+const MAX_TRANSCRIPT_LINES = 24;
 
 function newId() { return `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`; }
+
+function statusCopy(
+  pending: PendingState,
+  listening: boolean,
+  hasVerdict: boolean,
+  hasNudge: boolean
+) {
+  if (pending === 'identifying') return { title: 'Reading product', copy: 'Matching the snip to product evidence.' };
+  if (pending === 'judging') return { title: 'Checking trust', copy: 'Seller, claims, price and proof are being weighed.' };
+  if (hasNudge) return { title: 'Claim spotted', copy: 'Verify it before paying.' };
+  if (listening) return { title: 'Listening', copy: 'Risky seller claims will surface here.' };
+  if (hasVerdict) return { title: 'Decision ready', copy: 'Use the next action, or open read-more for proof.' };
+  return { title: 'Ready', copy: 'Snip the product, or listen while you watch.' };
+}
 
 export function App() {
   const [settings, setSettings] = useState<AuntieSettings>({});
@@ -77,6 +91,7 @@ export function App() {
     pending === 'idle' &&
     latestActionableClaim !== null &&
     latestActionableClaim.id !== dismissedNudgeId;
+  const guide = statusCopy(pending, listening || demoNudgeActive, verdicts.length > 0, showTrustNudge);
 
   const claimToTrigger = (claim: typeof latestActionableClaim): TriggerClaim | null =>
     claim
@@ -172,11 +187,13 @@ export function App() {
     }
     if (!settings.openaiKey) { setShowSettings(true); return; }
     try {
+      setTranscript([]);
       const transcriber = createTranscriber(settings.openaiKey, {
         onText: async text => {
-          // Keep only the last 3 chunks; transcript is a live strip, not a log.
-          // The CLAIMS bullets and verdicts are the lasting record.
-          setTranscript(t => [...t.slice(-2), { id: newId(), text, at: Date.now() }]);
+          setTranscript(t => [
+            ...t.slice(-(MAX_TRANSCRIPT_LINES - 1)),
+            { id: newId(), text, at: Date.now() }
+          ]);
           if (dedupeRef.current.isDuplicate(text)) return;
           dedupeRef.current.add(text);
 
@@ -373,24 +390,32 @@ export function App() {
 
       <div className="actions">
         <button className="action-btn primary" onClick={() => startProductSnip()}>
-          ✂ Snip product <span className="kbd">⌥⇧S</span>
+          Snip product <span className="kbd">⌥⇧S</span>
         </button>
         <button className={`action-btn ${listening ? 'primary' : ''}`} onClick={toggleListen}>
-          {listening ? '■ Stop listening' : '◎ Listen'} <span className="kbd">⌥⇧L</span>
+          {listening ? 'Stop listening' : 'Listen'} <span className="kbd">⌥⇧L</span>
         </button>
       </div>
 
-      <IntentSelector value={buyerIntent} onChange={setBuyerIntent} />
-      <IntentBrief intent={buyerIntent} listening={listening || demoNudgeActive} />
-
-      {listening && (
-        <div style={{ padding: '0 18px', display: 'flex', flexDirection: 'column', gap: 10 }}>
-          <TranscriptFeed lines={transcript} active={listening} />
-          <ClaimsBullets bullets={bullets} />
+      <div className="guide-strip">
+        <div className={`guide-dot ${listening || demoNudgeActive ? 'live' : ''}`} />
+        <div className="guide-text">
+          <div className="guide-title">{guide.title}</div>
+          <div className="guide-copy">{guide.copy}</div>
         </div>
+      </div>
+
+      {(listening || transcript.length > 0) && (
+        <details className="live-details">
+          <summary>Live monitor</summary>
+          <TranscriptFeed lines={transcript} active={listening} />
+          {(listening || bullets.length > 0) && <ClaimsBullets bullets={bullets} />}
+        </details>
       )}
 
       <div className="body">
+        <IntentSelector value={buyerIntent} onChange={setBuyerIntent} />
+
         {showTrustNudge && latestActionableClaim && (
           <TrustNudge
             claim={latestActionableClaim}
@@ -439,8 +464,8 @@ export function App() {
         {verdicts.length === 0 && pending === 'idle' && (
           <div className="empty">
             <div className="empty-mascot"><Mascot mood="idle" size={108} /></div>
-            <div>Snip a product on the livestream to get the verdict.</div>
-            <div style={{ marginTop: 6, fontSize: 11 }}>Or hit <kbd>Alt+Shift+L</kbd> to listen for risky claims, <kbd>Alt+Shift+D</kbd> for a demo.</div>
+            <div className="empty-title">No decision yet</div>
+            <div className="empty-copy">Snip a product for an instant read. Listen to catch risky claims while you watch.</div>
           </div>
         )}
 
