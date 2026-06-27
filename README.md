@@ -49,7 +49,7 @@ The overlay anchors to the right edge of your primary display. If you don't see 
 | `Alt+Shift+A` | Show / hide the overlay |
 | `Alt+Shift+S` | Snip a product (drag region; `Esc` cancels) |
 | `Alt+Shift+L` | Toggle LISTEN (transcript + claim bullets) |
-| `Alt+Shift+D` | Demo trigger — fires a known scam-scenario verdict without needing a snip (useful for stage failures) |
+| `Alt+Shift+D` | Demo trigger — runs the full live JUDGE on a known scam scenario without needing a snip |
 | `›` button | Collapse the panel to a 64px floating pill (click pill to expand back) |
 
 ### Production build
