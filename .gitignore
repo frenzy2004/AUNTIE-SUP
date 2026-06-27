@@ -16,5 +16,10 @@ auntie-app/.next/
 # generated/temp electron-vite config
 electron.vite.config.*.mjs
 
-# internal doc (not for publishing)
+# internal docs (not for publishing)
 02_livestream_trust_build_doc.md
+05_auntie_architecture.md
+implementation_plan.md
+
+# legacy Next.js scaffold (superseded by Electron build)
+auntie-app/

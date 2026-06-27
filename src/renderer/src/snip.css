@@ -1,0 +1,76 @@
+/* Opaque snip window now — it shows a frozen screenshot of the screen, so
+   YouTube blanking on focus loss can't affect us. */
+html, body, #root {
+  margin: 0;
+  height: 100%;
+  background: #000;
+  cursor: crosshair;
+  user-select: none;
+  -webkit-user-select: none;
+  overflow: hidden;
+  font-family: 'Inter', -apple-system, sans-serif;
+}
+
+.snip-root {
+  position: fixed;
+  inset: 0;
+}
+.snip-bg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  pointer-events: none;
+  filter: brightness(0.85) saturate(0.95);
+  z-index: 0;
+}
+
+.snip-hint {
+  position: absolute;
+  z-index: 2;
+  top: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 10px 18px;
+  background: rgba(20, 22, 28, 0.85);
+  backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+  color: rgba(255, 255, 255, 0.92);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4);
+}
+.snip-hint kbd {
+  display: inline-block;
+  padding: 2px 6px;
+  margin: 0 2px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 4px;
+  font-family: 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 11px;
+}
+
+.snip-rect {
+  position: absolute;
+  z-index: 1;
+  border: 2px solid #a78bfa;
+  background: rgba(167, 139, 250, 0.12);
+  pointer-events: none;
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.42);
+}
+.snip-rect-size {
+  position: absolute;
+  bottom: -28px;
+  left: 0;
+  padding: 3px 8px;
+  background: #a78bfa;
+  color: #1a1a2e;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: 'SF Mono', Menlo, Consolas, monospace;
+}

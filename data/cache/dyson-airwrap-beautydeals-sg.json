@@ -1,0 +1,115 @@
+{
+  "schemaVersion": 1,
+  "scrapedAt": "2026-06-24T10:00:00.000Z",
+  "source": {
+    "url": "https://www.tiktok.com/@beautydeals_sg/live",
+    "platform": "TikTok"
+  },
+  "product": {
+    "name": "Dyson Airwrap Complete Long",
+    "brand": "Dyson",
+    "category": "Hair Styling",
+    "visiblePrice": "S$299"
+  },
+  "seller": {
+    "handle": "BeautyDeals_SG",
+    "platform": "TikTok Shop",
+    "accountAgeDays": 6,
+    "followerCount": 342,
+    "totalPosts": 8,
+    "bio": "🔥 CHEAPEST beauty products in SG! 100% ORIGINAL. DM for wholesale pricing."
+  },
+  "seller_claims": [
+    "100% Original Dyson product",
+    "Cheapest in Singapore — today only!",
+    "FDA approved technology",
+    "Official authorized reseller",
+    "Only 5 units left, grab now!"
+  ],
+  "other_sellers": [
+    { "name": "Dyson Official Store (Shopee Mall)", "price": "S$699", "verified": true, "reviews": 12400, "url": "https://shopee.sg/dyson" },
+    { "name": "Dyson Singapore (Lazada)", "price": "S$699", "verified": true, "reviews": 8900, "url": "https://lazada.sg/shop/dyson-official-store" },
+    { "name": "Best Electronics SG", "price": "S$649", "verified": true, "reviews": 3200 },
+    { "name": "TechZone Official", "price": "S$659", "verified": true, "reviews": 2100 },
+    { "name": "Hair Studio Pro", "price": "S$679", "verified": false, "reviews": 890 },
+    { "name": "BeautyHub SG", "price": "S$689", "verified": true, "reviews": 4500 },
+    { "name": "GadgetWorld", "price": "S$655", "verified": false, "reviews": 1200 },
+    { "name": "HomeLiving Store", "price": "S$669", "verified": true, "reviews": 2800 },
+    { "name": "StyleMart SG", "price": "S$695", "verified": true, "reviews": 1900 }
+  ],
+  "price_analysis": {
+    "seller_price_numeric": 299,
+    "market_prices": [699, 699, 649, 659, 679, 689, 655, 669, 695],
+    "median_price": 679,
+    "deviation_percent": -55.9,
+    "min_market_price": 649,
+    "max_market_price": 699,
+    "currency": "S$"
+  },
+  "comments": {
+    "total": 240,
+    "sample_negative": [
+      { "user": "maria_sg22", "text": "Ordered 2 weeks ago, never arrived. No reply to messages.", "likes": 45 },
+      { "user": "tanweiling", "text": "FAKE!!! The box look different from real Dyson. Plastic feel cheap.", "likes": 89 },
+      { "user": "shopaholic_jane", "text": "Confirm scam la. I kena already. Cannot refund somemore.", "likes": 67 },
+      { "user": "beautyqueen_my", "text": "Same seller different name last month. Got banned then come back.", "likes": 34 },
+      { "user": "ahkow88", "text": "Wah the airwrap broke after 1 use. Definitely not original.", "likes": 56 },
+      { "user": "sarah_reviews", "text": "I compared with my friend's real one — the weight is completely different", "likes": 28 },
+      { "user": "jenny_lim_sg", "text": "Don't buy!! Serial number doesn't check out on Dyson website", "likes": 72 },
+      { "user": "fitnessmom_kl", "text": "Aiyoo I should have checked first. This one not even close to original", "likes": 41 },
+      { "user": "techsavvy_ben", "text": "Seller asked me pay via WhatsApp transfer for 'extra discount'. RED FLAG.", "likes": 93 },
+      { "user": "chloe_tan", "text": "Package came from China, not Singapore. Took 3 weeks.", "likes": 38 }
+    ],
+    "sample_positive": [
+      { "user": "newuser_0612", "text": "Great product! Love it! ⭐⭐⭐⭐⭐", "likes": 0 },
+      { "user": "happybuyer_sg", "text": "Fast delivery, very good quality. Recommended!", "likes": 1 },
+      { "user": "beautylover_2026", "text": "Cheapest I found! Seller very nice.", "likes": 0 }
+    ],
+    "negative_count": 31,
+    "positive_count": 48,
+    "neutral_count": 161,
+    "negative_keywords": {
+      "never_arrived": 8,
+      "fake": 12,
+      "scam": 7,
+      "broke": 4,
+      "not_original": 6,
+      "no_refund": 5
+    }
+  },
+  "cross_web": {
+    "independent_mentions": 0,
+    "reviews_only_on_seller_page": true,
+    "brand_authorized_reseller_list": "Seller NOT found on Dyson Singapore authorized reseller list (checked dyson.com.sg/support/find-a-store)",
+    "similar_complaints_found": [
+      { "source": "HardwareZone Forum", "text": "Anyone bought from BeautyDeals_SG? Seems too cheap to be real.", "url": "https://forums.hardwarezone.com.sg/threads/beautydeals-sg" },
+      { "source": "Reddit r/singapore", "text": "PSA: BeautyDeals_SG on TikTok is selling fake Dysons. Got burned last week.", "url": "https://www.reddit.com/r/singapore" }
+    ]
+  },
+  "script_reuse": {
+    "identical_caption_accounts": [
+      { "name": "BeautyDeals_MY", "created": "2026-06-08", "caption_similarity": 0.94 },
+      { "name": "TechDeals_SG_Official", "created": "2026-06-10", "caption_similarity": 0.91 },
+      { "name": "GadgetBargains_PH", "created": "2026-06-12", "caption_similarity": 0.88 }
+    ],
+    "shared_caption_excerpt": "🔥 CHEAPEST [product] in [country]! 100% ORIGINAL. Limited stock — grab before sold out! DM for wholesale pricing."
+  },
+  "footprint": {
+    "domain": "beautydeals-sg.com",
+    "domain_age_days": 6,
+    "registrar": "Namecheap",
+    "registrant_country": "CN",
+    "ssl_issuer": "Let's Encrypt",
+    "acra_match": false,
+    "whois_privacy": true,
+    "independent_backlinks": 0
+  },
+  "beat": {
+    "product": "Dyson Airwrap Complete Long",
+    "price": "S$679",
+    "seller": "Dyson Official Store (Shopee Mall)",
+    "url": "https://shopee.sg/dyson",
+    "verified": true,
+    "savingsVsSeller": "Buy from a verified authorized reseller — same product, real warranty."
+  }
+}
