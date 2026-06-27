@@ -37,6 +37,9 @@ const auntie = {
   // External links (BEAT)
   openExternal: (url: string) => ipcRenderer.send('auntie:open-external', url),
 
+  // Clipboard (Export) — copied via main for reliability in the overlay window
+  copyToClipboard: (text: string): Promise<boolean> => ipcRenderer.invoke('auntie:copy', text),
+
   // Collapse / expand the overlay window
   setCollapsed: (collapsed: boolean) => ipcRenderer.send('auntie:set-collapsed', collapsed),
 

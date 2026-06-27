@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { app, BrowserWindow, globalShortcut, Tray, Menu, ipcMain, desktopCapturer, screen, nativeImage, shell } from 'electron';
+import { app, BrowserWindow, globalShortcut, Tray, Menu, ipcMain, desktopCapturer, screen, nativeImage, shell, clipboard } from 'electron';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import Store from 'electron-store';
@@ -276,6 +276,14 @@ ipcMain.on('auntie:set-collapsed', (_e, collapsed: boolean) => {
   if (!overlayWindow) return;
   const target = collapsed ? collapsedBounds() : expandedBounds();
   overlayWindow.setBounds(target);
+});
+
+// Reliable clipboard write from the always-on-top overlay. navigator.clipboard
+// is flaky in a frameless, often-unfocused window, so we copy via main.
+ipcMain.handle('auntie:copy', (_e, text: string) => {
+  if (typeof text !== 'string') return false;
+  clipboard.writeText(text);
+  return true;
 });
 
 // ─── App lifecycle ──────────────────────────────────────────────────────────

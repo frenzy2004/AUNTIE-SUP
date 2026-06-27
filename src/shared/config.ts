@@ -3,7 +3,7 @@
 export const MODELS = {
   reasoning: 'gpt-4o',
   vision: 'gpt-4o',
-  transcribe: 'gpt-4o-mini-transcribe',
+  transcribe: 'gpt-4o-transcribe',
   claimExtract: 'gpt-4o-mini'
 } as const;
 

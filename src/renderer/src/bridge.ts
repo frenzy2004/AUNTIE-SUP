@@ -17,6 +17,10 @@ const browserBridge: AuntieBridge = {
   openExternal: url => {
     globalThis.open?.(url, '_blank', 'noopener,noreferrer');
   },
+  copyToClipboard: async text => {
+    try { await navigator.clipboard.writeText(text); return true; }
+    catch { return false; }
+  },
   setCollapsed: () => {},
   onDemoTrigger: () => off
 };

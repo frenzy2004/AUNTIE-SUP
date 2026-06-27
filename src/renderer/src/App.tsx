@@ -54,6 +54,7 @@ export function App() {
 
   const [collapsed, setCollapsed] = useState(false);
   const [bullets, setBullets] = useState<ClaimBullet[]>([]);
+  const [exported, setExported] = useState(false);
 
   const captureRef = useRef<CaptureHandle | null>(null);
   const transcriberRef = useRef<TranscribeHandle | null>(null);
@@ -365,6 +366,39 @@ export function App() {
     setVerdicts(v => [updated, ...v.filter(r => r.generatedAt !== recent.generatedAt)]);
   };
 
+  // ─── Restart: wipe the session back to a clean slate ─────────────────────
+  // Stops any live listening, drops all verdicts / transcript / claim bullets
+  // and resets the deduper. Settings (API keys) and the chosen buyer intent are
+  // intentionally preserved so you can immediately start again.
+  const resetSession = useCallback(() => {
+    captureRef.current?.stop();
+    transcriberRef.current?.stop();
+    captureRef.current = null;
+    transcriberRef.current = null;
+    listenErrorRef.current = false;
+    lastVerdictRef.current = null;
+    dedupeRef.current = new ClaimDeduper();
+    setListening(false);
+    setListenStatus('Idle');
+    setAudioLevel(0);
+    setVerdicts([]);
+    setTranscript([]);
+    setBullets([]);
+    setPending('idle');
+    setSeeError(null);
+    setDismissedNudgeId(null);
+    setDemoNudgeActive(false);
+    setPendingTriggerClaim(null);
+  }, []);
+
+  const hasSession =
+    verdicts.length > 0 ||
+    transcript.length > 0 ||
+    bullets.length > 0 ||
+    listening ||
+    demoNudgeActive ||
+    pending !== 'idle';
+
   // ─── Render ───────────────────────────────────────────────────────────
   if (collapsed) {
     return (
@@ -393,15 +427,28 @@ export function App() {
         <div className="controls">
           {verdicts.length > 0 && (
             <button
-              className="header-export"
+              className={`header-export ${exported ? 'done' : ''}`}
               title="Copy latest verdict as JSON"
-              onClick={() => {
+              onClick={async () => {
                 const latest = verdicts[0];
                 if (!latest) return;
-                navigator.clipboard.writeText(JSON.stringify(latest, null, 2));
+                const ok = await auntie.copyToClipboard(JSON.stringify(latest, null, 2));
+                if (ok) {
+                  setExported(true);
+                  window.setTimeout(() => setExported(false), 1400);
+                }
               }}
             >
-              Export
+              {exported ? 'Copied' : 'Export'}
+            </button>
+          )}
+          {hasSession && (
+            <button
+              className="header-export header-restart"
+              title="Clear verdicts, transcript and claims to start fresh"
+              onClick={resetSession}
+            >
+              Restart
             </button>
           )}
           <button
