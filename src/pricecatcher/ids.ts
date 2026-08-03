@@ -12,7 +12,5 @@ export function canonicalizeCode(value: unknown): string | null {
 export function compareCanonicalCodes(left: string, right: string): number {
   const leftParsed = CanonicalCodeSchema.parse(left)
   const rightParsed = CanonicalCodeSchema.parse(right)
-  const a = BigInt(leftParsed)
-  const b = BigInt(rightParsed)
-  return a < b ? -1 : a > b ? 1 : 0
+  return leftParsed.length - rightParsed.length || (leftParsed < rightParsed ? -1 : leftParsed > rightParsed ? 1 : 0)
 }

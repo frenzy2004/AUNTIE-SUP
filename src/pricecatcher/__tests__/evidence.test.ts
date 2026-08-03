@@ -4,7 +4,8 @@ import { RecommendationResultSchema } from '../contracts/recommendation'
 import {
   inputWithOldClock, makeSnapshot, snapshotWithBadBaselineAndNoCandidate, snapshotWithCandidateObservations,
   snapshotWithMixedCandidateFailures, snapshotWithOldData, snapshotWithOnlyFarCandidates, snapshotWithPairDates,
-  snapshotWithThreePremisesAndOneBadCandidate, validInput, eligibleCell
+  snapshotWithThreePremisesAndOneBadCandidate, validInput, eligibleCell,
+  fixedDescriptorMutationProbe, lineDescriptorMutationProbe
 } from './snapshotFixture'
 
 const usualPreflightInput = (overrides: Record<string, unknown> = {}) => {
@@ -109,6 +110,42 @@ describe('evidence evaluation', () => {
     expect(normalized!.lines.every(Object.isFrozen)).toBe(true)
     expect(Object.isFrozen(normalized!.fixedTripCostByPremiseCode)).toBe(true)
     expect(Object.values(normalized!.fixedTripCostByPremiseCode!).every(Object.isFrozen)).toBe(true)
+  })
+
+  // Break caught: a later top descriptor can rewrite a line before nested capture.
+  it('captures a line before reading the later mode descriptor', () => {
+    const normalization = lineDescriptorMutationProbe(validInput())
+    const normalized = normalizeRecommendationRequest(normalization.request)
+    expect(normalized?.lines).toEqual([{ itemCode: '10', quantityHundredths: 100 }])
+    expect(normalization.events.indexOf('line:itemCode')).toBeLessThan(normalization.events.indexOf('top:mode'))
+    for (const event of ['line:itemCode', 'line:quantityHundredths', 'top:mode']) {
+      expect(normalization.descriptorCalls.get(event), event).toBe(1)
+    }
+
+    const evaluation = lineDescriptorMutationProbe(validInput())
+    expect(evaluateEvidence(makeSnapshot(), evaluation.request)).toMatchObject({ kind: 'ready', comparisonOnlyReasons: [] })
+    expect(evaluation.events.indexOf('line:itemCode')).toBeLessThan(evaluation.events.indexOf('top:mode'))
+    for (const event of ['line:itemCode', 'line:quantityHundredths', 'top:mode']) {
+      expect(evaluation.descriptorCalls.get(event), event).toBe(1)
+    }
+  })
+
+  // Break caught: a later threshold descriptor can rewrite a fixed-cost entry before nested capture.
+  it('captures fixed costs before reading the later worthwhile threshold descriptor', () => {
+    const normalization = fixedDescriptorMutationProbe(validInput())
+    const normalized = normalizeRecommendationRequest(normalization.request)
+    expect(normalized?.fixedTripCostByPremiseCode?.['2']).toEqual({ status: 'confirmed', amountSen: 0 })
+    expect(normalization.events.indexOf('fixed-entry:status')).toBeLessThan(normalization.events.indexOf('top:worthwhileThresholdSen'))
+    for (const event of ['top:fixedTripCostByPremiseCode', 'fixed-map:2', 'fixed-entry:status', 'fixed-entry:amountSen', 'top:worthwhileThresholdSen']) {
+      expect(normalization.descriptorCalls.get(event), event).toBe(1)
+    }
+
+    const evaluation = fixedDescriptorMutationProbe(validInput())
+    expect(evaluateEvidence(makeSnapshot(), evaluation.request)).toMatchObject({ kind: 'ready', comparisonOnlyReasons: [] })
+    expect(evaluation.events.indexOf('fixed-entry:status')).toBeLessThan(evaluation.events.indexOf('top:worthwhileThresholdSen'))
+    for (const event of ['top:fixedTripCostByPremiseCode', 'fixed-map:2', 'fixed-entry:status', 'fixed-entry:amountSen', 'top:worthwhileThresholdSen']) {
+      expect(evaluation.descriptorCalls.get(event), event).toBe(1)
+    }
   })
 
   // Break caught: the five minute grace is implemented as a strict or rounded boundary.
@@ -346,9 +383,12 @@ describe('evidence evaluation', () => {
 
   // Break caught: malformed canonical values throw or prototype-named fixed-cost entries disappear during unknown-input decoding.
   it('fails closed across evidence and normalization for every malformed code boundary', () => {
+    const veryLongCode = '9'.repeat(100_000)
     const malformed: Array<{ name: string; build: () => unknown }> = [
       { name: 'usual premise', build: () => ({ ...validInput(), usualPremiseCode: 'abc' }) },
       { name: 'basket line', build: () => ({ ...validInput(), lines: [{ itemCode: '1.2', quantityHundredths: 100 }] }) },
+      { name: 'very-long usual premise', build: () => ({ ...validInput(), usualPremiseCode: veryLongCode }) },
+      { name: 'very-long basket line', build: () => ({ ...validInput(), lines: [{ itemCode: veryLongCode, quantityHundredths: 100 }] }) },
       { name: 'constructor fixed-cost key', build: () => {
         const request = validInput()
         Object.defineProperty(request.fixedTripCostByPremiseCode!, 'constructor', {
@@ -366,6 +406,11 @@ describe('evidence evaluation', () => {
       { name: 'out-of-range fixed-cost key', build: () => {
         const request = validInput()
         request.fixedTripCostByPremiseCode!['9007199254740992'] = { status: 'confirmed', amountSen: 0 }
+        return request
+      } },
+      { name: 'very-long fixed-cost key', build: () => {
+        const request = validInput()
+        request.fixedTripCostByPremiseCode![veryLongCode] = { status: 'confirmed', amountSen: 0 }
         return request
       } }
     ]

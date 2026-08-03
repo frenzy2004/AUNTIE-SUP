@@ -190,45 +190,76 @@ const freezeRecommendationInput = (input: RecommendationInput): RecommendationIn
   return Object.freeze(input)
 }
 
-const captureStrictRecommendationInputUnchecked = (
-  shell: Record<string, unknown>,
-  location: Record<string, unknown>,
-  rawLines: readonly unknown[]
-): RecommendationInput | null => {
-  const lines: Record<string, unknown>[] = []
-  for (const rawLine of rawLines) {
-    const line = readExactPlainData(rawLine, ['itemCode', 'quantityHundredths'])
-    if (!line) return null
-    lines.push(line)
-  }
+const captureBasketLines = (value: unknown, maximumLength: number): Record<string, unknown>[] | null => {
+  try {
+    if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) return null
+    const lengthDescriptor = Object.getOwnPropertyDescriptor(value, 'length')
+    if (!lengthDescriptor || lengthDescriptor.enumerable || !hasOwn(lengthDescriptor, 'value') ||
+        !Number.isSafeInteger(lengthDescriptor.value) || lengthDescriptor.value < 0 || lengthDescriptor.value > maximumLength) return null
+    const keys = Reflect.ownKeys(value)
+    if (keys.length !== lengthDescriptor.value + 1 || keys.some(key => typeof key !== 'string')) return null
+    const keySet = new Set(keys)
+    if (!keySet.has('length')) return null
 
-  const captured: Record<string, unknown> = {}
-  for (const key of Object.keys(shell)) defineData(captured, key, shell[key])
-  captured.location = location
-  captured.lines = lines
-  if (hasOwn(shell, 'fixedTripCostByPremiseCode') && shell.fixedTripCostByPremiseCode !== undefined) {
-    const sourceCosts = readPlainDataRecord(shell.fixedTripCostByPremiseCode)
-    if (!sourceCosts) return null
-    const costs: Record<string, unknown> = {}
-    for (const premiseCode of Object.keys(sourceCosts)) {
-      if (!CanonicalCodeSchema.safeParse(premiseCode).success) return null
-      const entry = readAllowedPlainData(sourceCosts[premiseCode], ['status', 'amountSen'])
-      if (!entry) return null
-      defineData(costs, premiseCode, entry)
+    const lines: Record<string, unknown>[] = []
+    for (let index = 0; index < lengthDescriptor.value; index++) {
+      const key = String(index)
+      if (!keySet.has(key)) return null
+      const descriptor = Object.getOwnPropertyDescriptor(value, key)
+      if (!descriptor || !descriptor.enumerable || !hasOwn(descriptor, 'value')) return null
+      const line = readExactPlainData(descriptor.value, ['itemCode', 'quantityHundredths'])
+      if (!line) return null
+      lines.push(line)
     }
-    captured.fixedTripCostByPremiseCode = costs
-  }
+    return lines
+  } catch { return null }
+}
 
-  const strict = RecommendationInputSchema.safeParse(captured)
+const captureFixedTripCosts = (value: unknown): Record<string, unknown> | null => {
+  const snapshot = readPlainDescriptorSnapshot(value)
+  if (!snapshot || snapshot.keys.some(key => typeof key !== 'string' || !CanonicalCodeSchema.safeParse(key).success)) return null
+  const costs: Record<string, unknown> = {}
+  const premiseCodes = (snapshot.keys as string[]).sort(compareCanonicalCodes)
+  for (const premiseCode of premiseCodes) {
+    const descriptor = readSnapshotDescriptor(snapshot, premiseCode)
+    if (!descriptor || !descriptor.enumerable || !hasOwn(descriptor, 'value')) return null
+    const entry = readAllowedPlainData(descriptor.value, ['status', 'amountSen'])
+    if (!entry) return null
+    defineData(costs, premiseCode, entry)
+  }
+  return costs
+}
+
+const materializeRecommendationShell = (
+  snapshot: PlainDescriptorSnapshot,
+  location: Record<string, unknown>,
+  lines: readonly Record<string, unknown>[]
+): Record<string, unknown> | null => {
+  if (!hasOnlyAllowedSnapshotKeys(snapshot, RECOMMENDATION_REQUEST_KEYS)) return null
+  const shell: Record<string, unknown> = {}
+  for (const key of RECOMMENDATION_REQUEST_KEYS) {
+    if (!snapshot.keySet.has(key)) continue
+    const descriptor = readSnapshotDescriptor(snapshot, key)
+    if (!descriptor || !descriptor.enumerable || !hasOwn(descriptor, 'value')) return null
+    let value = descriptor.value
+    if (key === 'location') value = location
+    else if (key === 'lines') value = lines
+    else if (key === 'fixedTripCostByPremiseCode' && value !== undefined) {
+      value = captureFixedTripCosts(value)
+      if (value === null) return null
+    }
+    defineData(shell, key, value)
+  }
+  return shell
+}
+
+const captureStrictRecommendationInputUnchecked = (shell: Record<string, unknown>): RecommendationInput | null => {
+  const strict = RecommendationInputSchema.safeParse(shell)
   return strict.success ? freezeRecommendationInput(strict.data) : null
 }
 
-const captureStrictRecommendationInput = (
-  shell: Record<string, unknown>,
-  location: Record<string, unknown>,
-  rawLines: readonly unknown[]
-): RecommendationInput | null => {
-  try { return captureStrictRecommendationInputUnchecked(shell, location, rawLines) } catch { return null }
+const captureStrictRecommendationInput = (shell: Record<string, unknown>): RecommendationInput | null => {
+  try { return captureStrictRecommendationInputUnchecked(shell) } catch { return null }
 }
 
 const commonPreflightUnchecked = (snapshot: PilotSnapshotV1, value: unknown): { input?: RecommendationInput; reason?: ReasonCode; evaluatedDate?: LocalDate } => {
@@ -253,12 +284,12 @@ const commonPreflightUnchecked = (snapshot: PilotSnapshotV1, value: unknown): { 
   if (linesField.kind === 'missing') return { reason: 'basket-empty' }
   if (linesField.kind === 'invalid') return { reason: 'input-invalid' }
   try { if (!Array.isArray(linesField.value)) return { reason: 'basket-empty' } } catch { return { reason: 'input-invalid' } }
-  const rawLines = readDensePlainArray(linesField.value, maximumSatisfiableRawLineCount(snapshot.items.length))
-  if (!rawLines) return { reason: 'input-invalid' }
-  if (rawLines.length === 0) return { reason: 'basket-empty' }
-  const shell = materializePlainData(snapshotFields, RECOMMENDATION_REQUEST_KEYS)
+  const lines = captureBasketLines(linesField.value, maximumSatisfiableRawLineCount(snapshot.items.length))
+  if (!lines) return { reason: 'input-invalid' }
+  if (lines.length === 0) return { reason: 'basket-empty' }
+  const shell = materializeRecommendationShell(snapshotFields, location, lines)
   if (!shell) return { reason: 'input-invalid' }
-  const input = captureStrictRecommendationInput(shell, location, rawLines)
+  const input = captureStrictRecommendationInput(shell)
   return input ? { input, evaluatedDate } : { reason: 'input-invalid' }
 }
 
@@ -271,12 +302,16 @@ export function normalizeRecommendationRequest(request: unknown): Recommendation
   try {
     const snapshotFields = readPlainDescriptorSnapshot(request)
     if (!snapshotFields || !hasOnlyAllowedSnapshotKeys(snapshotFields, RECOMMENDATION_REQUEST_KEYS)) return null
-    const shell = materializePlainData(snapshotFields, RECOMMENDATION_REQUEST_KEYS)
-    if (!shell) return null
-    const location = readExactPlainData(shell.location, ['latitude', 'longitude', 'accuracyMetres'])
-    if (!location || !Array.isArray(shell.lines)) return null
-    const rawLines = readDensePlainArray(shell.lines, Number.MAX_SAFE_INTEGER)
-    return rawLines ? captureStrictRecommendationInput(shell, location, rawLines) : null
+    const locationField = readSnapshotField(snapshotFields, 'location')
+    if (locationField.kind !== 'value') return null
+    const location = readExactPlainData(locationField.value, ['latitude', 'longitude', 'accuracyMetres'])
+    if (!location) return null
+    const linesField = readSnapshotField(snapshotFields, 'lines')
+    if (linesField.kind !== 'value') return null
+    const lines = captureBasketLines(linesField.value, Number.MAX_SAFE_INTEGER)
+    if (!lines) return null
+    const shell = materializeRecommendationShell(snapshotFields, location, lines)
+    return shell ? captureStrictRecommendationInput(shell) : null
   } catch { return null }
 }
 

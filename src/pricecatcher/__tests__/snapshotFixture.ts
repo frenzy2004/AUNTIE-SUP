@@ -52,6 +52,70 @@ export function validInput(overrides: Partial<RecommendationInput> = {}): Recomm
   }
 }
 
+export interface NestedDescriptorMutationProbe {
+  request: RecommendationInput
+  events: string[]
+  descriptorCalls: Map<string, number>
+}
+
+const recordDescriptor = (probe: Pick<NestedDescriptorMutationProbe, 'events' | 'descriptorCalls'>, event: string): void => {
+  probe.events.push(event)
+  probe.descriptorCalls.set(event, (probe.descriptorCalls.get(event) ?? 0) + 1)
+}
+
+export function lineDescriptorMutationProbe(input: RecommendationInput): NestedDescriptorMutationProbe {
+  const probe = { events: [], descriptorCalls: new Map<string, number>() }
+  const line = { ...input.lines[0]! }
+  input.lines = [new Proxy(line, {
+    getOwnPropertyDescriptor: (target, key) => {
+      recordDescriptor(probe, `line:${String(key)}`)
+      return Reflect.getOwnPropertyDescriptor(target, key)
+    },
+    get: () => { throw new Error('raw line get must not run') }
+  })]
+  const request = new Proxy(input, {
+    getOwnPropertyDescriptor: (target, key) => {
+      recordDescriptor(probe, `top:${String(key)}`)
+      if (key === 'mode') line.itemCode = '99'
+      return Reflect.getOwnPropertyDescriptor(target, key)
+    },
+    get: () => { throw new Error('raw request get must not run') }
+  })
+  return { request, ...probe }
+}
+
+export function fixedDescriptorMutationProbe(input: RecommendationInput): NestedDescriptorMutationProbe {
+  const probe = { events: [], descriptorCalls: new Map<string, number>() }
+  const entry = { status: 'confirmed', amountSen: 0 } as Record<string, unknown>
+  const entryProxy = new Proxy(entry, {
+    getOwnPropertyDescriptor: (target, key) => {
+      recordDescriptor(probe, `fixed-entry:${String(key)}`)
+      return Reflect.getOwnPropertyDescriptor(target, key)
+    },
+    get: () => { throw new Error('raw fixed-entry get must not run') }
+  })
+  const map = { ...input.fixedTripCostByPremiseCode, '2': entryProxy } as unknown as RecommendationInput['fixedTripCostByPremiseCode']
+  input.fixedTripCostByPremiseCode = new Proxy(map!, {
+    getOwnPropertyDescriptor: (target, key) => {
+      recordDescriptor(probe, `fixed-map:${String(key)}`)
+      return Reflect.getOwnPropertyDescriptor(target, key)
+    },
+    get: () => { throw new Error('raw fixed-map get must not run') }
+  })
+  const request = new Proxy(input, {
+    getOwnPropertyDescriptor: (target, key) => {
+      recordDescriptor(probe, `top:${String(key)}`)
+      if (key === 'worthwhileThresholdSen') {
+        entry.status = 'unknown'
+        delete entry.amountSen
+      }
+      return Reflect.getOwnPropertyDescriptor(target, key)
+    },
+    get: () => { throw new Error('raw request get must not run') }
+  })
+  return { request, ...probe }
+}
+
 export function snapshotWithCandidateObservations(observations: ObservationEvidenceV1[]): PilotSnapshotV1 {
   const snapshot = makeSnapshot()
   const selected = [...observations].sort((left, right) => right.observedDate.localeCompare(left.observedDate)).find(observation => observation.status !== 'missing')

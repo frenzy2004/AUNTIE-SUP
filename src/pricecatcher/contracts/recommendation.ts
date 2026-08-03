@@ -4,15 +4,84 @@ import {
   ReasonCodeSchema, SenSchema, SignedSenSchema
 } from './common'
 
-export const RecommendationRequestSchema = z.object({
+const DATA_COPY_FAILED = Symbol('recommendation-data-copy-failed')
+const DANGEROUS_OWN_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
+const MAX_COPY_DEPTH = 64
+const MAX_COPY_VALUES = 100_000
+type DataCopyState = { active: WeakSet<object>; values: number }
+
+const defineData = (target: Record<string, unknown>, key: string, value: unknown): void => {
+  Object.defineProperty(target, key, { configurable: true, enumerable: true, value, writable: true })
+}
+
+const copyUntrustedData = (value: unknown, state: DataCopyState, depth: number): unknown | typeof DATA_COPY_FAILED => {
+  if (++state.values > MAX_COPY_VALUES || depth > MAX_COPY_DEPTH) return DATA_COPY_FAILED
+  if (typeof value !== 'object' || value === null) {
+    return typeof value === 'function' || typeof value === 'symbol' ? DATA_COPY_FAILED : value
+  }
+  if (state.active.has(value)) return DATA_COPY_FAILED
+  state.active.add(value)
+  try {
+    if (Array.isArray(value)) {
+      if (Object.getPrototypeOf(value) !== Array.prototype) return DATA_COPY_FAILED
+      const keys = Reflect.ownKeys(value)
+      const lengthDescriptor = Object.getOwnPropertyDescriptor(value, 'length')
+      if (!lengthDescriptor || lengthDescriptor.enumerable || !Object.prototype.hasOwnProperty.call(lengthDescriptor, 'value') ||
+          !Number.isSafeInteger(lengthDescriptor.value) || lengthDescriptor.value < 0 || keys.length !== lengthDescriptor.value + 1) {
+        return DATA_COPY_FAILED
+      }
+      const keySet = new Set(keys)
+      if (keys.some(key => typeof key !== 'string') || !keySet.has('length')) return DATA_COPY_FAILED
+      const copy: unknown[] = []
+      for (let index = 0; index < lengthDescriptor.value; index++) {
+        const key = String(index)
+        if (!keySet.has(key)) return DATA_COPY_FAILED
+        const descriptor = Object.getOwnPropertyDescriptor(value, key)
+        if (!descriptor || !descriptor.enumerable || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) return DATA_COPY_FAILED
+        const nested = copyUntrustedData(descriptor.value, state, depth + 1)
+        if (nested === DATA_COPY_FAILED) return DATA_COPY_FAILED
+        copy.push(nested)
+      }
+      return copy
+    }
+
+    if (Object.getPrototypeOf(value) !== Object.prototype) return DATA_COPY_FAILED
+    const keys = Reflect.ownKeys(value)
+    if (keys.some(key => typeof key !== 'string' || DANGEROUS_OWN_KEYS.has(key))) return DATA_COPY_FAILED
+    const copy: Record<string, unknown> = {}
+    const orderedKeys = (keys as string[]).sort((left, right) => left < right ? -1 : left > right ? 1 : 0)
+    for (const key of orderedKeys) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key)
+      if (!descriptor || !descriptor.enumerable || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) return DATA_COPY_FAILED
+      const nested = copyUntrustedData(descriptor.value, state, depth + 1)
+      if (nested === DATA_COPY_FAILED) return DATA_COPY_FAILED
+      defineData(copy, key, nested)
+    }
+    return copy
+  } catch {
+    return DATA_COPY_FAILED
+  } finally {
+    state.active.delete(value)
+  }
+}
+
+const captureUntrustedData = (value: unknown): unknown => {
+  try {
+    const copy = copyUntrustedData(value, { active: new WeakSet(), values: 0 }, 0)
+    return copy === DATA_COPY_FAILED ? null : copy
+  } catch { return null }
+}
+
+const RecommendationRequestBaseSchema = z.object({
   evaluatedAt: z.unknown().optional(), location: z.unknown().optional(),
   usualPremiseCode: z.unknown().optional(), basketScope: z.unknown().optional(),
   lines: z.unknown().optional(), mode: z.unknown().optional(),
   fuelEfficiencyDeciKmPerL: z.unknown().optional(), fuelPriceSenPerL: z.unknown().optional(),
   fixedTripCostByPremiseCode: z.unknown().optional(), worthwhileThresholdSen: z.unknown().optional()
 }).strict()
+export const RecommendationRequestSchema = z.preprocess(captureUntrustedData, RecommendationRequestBaseSchema)
 
-export const RecommendationInputSchema = z.object({
+const RecommendationInputBaseSchema = z.object({
   evaluatedAt: ISOInstantSchema,
   location: z.object({
     latitude: z.number().finite().min(-90).max(90),
@@ -34,6 +103,7 @@ export const RecommendationInputSchema = z.object({
   ])).optional(),
   worthwhileThresholdSen: SenSchema.max(10000).optional()
 }).strict()
+export const RecommendationInputSchema = z.preprocess(captureUntrustedData, RecommendationInputBaseSchema)
 
 export const ComparedLineV1Schema = z.object({
   itemCode: CanonicalCodeSchema, officialUnit: z.string().min(1), quantityHundredths: z.number().int().safe().min(1).max(9900),

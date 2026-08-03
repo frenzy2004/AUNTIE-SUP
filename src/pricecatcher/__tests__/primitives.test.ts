@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { CanonicalCodeSchema } from '../contracts/common'
 import { addLocalDates, differenceInLocalDates, malaysiaDateAt } from '../dates'
 import { haversineMetres, MEAN_EARTH_RADIUS_METRES } from '../distance'
@@ -39,6 +39,21 @@ describe('canonical identifiers', () => {
     expect(CanonicalCodeSchema.safeParse('9007199254740991').success).toBe(true)
     expect(canonicalizeCode('9007199254740992')).toBeNull()
     expect(CanonicalCodeSchema.safeParse('9007199254740992').success).toBe(false)
+  })
+
+  // Break caught: canonical validation delegates unbounded digit strings to BigInt.
+  it('rejects an oversized canonical prompt without BigInt work', () => {
+    const bigInt = vi.spyOn(globalThis, 'BigInt').mockImplementation(() => { throw new Error('BigInt must not run') })
+    try {
+      expect(CanonicalCodeSchema.safeParse('9007199254740991').success).toBe(true)
+      expect(CanonicalCodeSchema.safeParse('9007199254740992').success).toBe(false)
+      let oversizedSuccess: boolean | undefined
+      expect(() => { oversizedSuccess = CanonicalCodeSchema.safeParse('9'.repeat(100_000)).success }).not.toThrow()
+      expect(oversizedSuccess).toBe(false)
+      expect(bigInt).not.toHaveBeenCalled()
+    } finally {
+      bigInt.mockRestore()
+    }
   })
 
   // Break caught: a later BigInt refinement throws after the canonical syntax refinement has already failed.

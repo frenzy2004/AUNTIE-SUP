@@ -15,12 +15,13 @@ export const ISOInstantSchema = z.string().datetime({ offset: true })
 export const SenSchema = z.number().int().safe().nonnegative()
 export const SignedSenSchema = z.number().int().safe()
 const CANONICAL_CODE_PATTERN = /^(0|[1-9]\d*)$/
-const isWithinCanonicalCodeRange = (value: string): boolean => {
-  if (!CANONICAL_CODE_PATTERN.test(value)) return false
-  try { return BigInt(value) <= BigInt(Number.MAX_SAFE_INTEGER) } catch { return false }
-}
-export const CanonicalCodeSchema = z.string().regex(CANONICAL_CODE_PATTERN)
-  .refine(isWithinCanonicalCodeRange, 'code exceeds the supported safe-integer range')
+const MAX_CANONICAL_CODE = '9007199254740991'
+const isCanonicalCode = (value: string): boolean =>
+  value.length <= MAX_CANONICAL_CODE.length &&
+  CANONICAL_CODE_PATTERN.test(value) &&
+  (value.length < MAX_CANONICAL_CODE.length || value <= MAX_CANONICAL_CODE)
+export const CanonicalCodeSchema = z.string()
+  .refine(isCanonicalCode, 'invalid canonical code or unsupported safe-integer range')
 export const BuildIdSchema = z.string().regex(/^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,78}[A-Za-z0-9])?$/)
 export const Sha256Schema = z.string().regex(/^[a-f0-9]{64}$/)
 export const TransformVersionSchema = z.literal(PRICECATCHER_TRANSFORM_VERSION)

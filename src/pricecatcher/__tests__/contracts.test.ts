@@ -9,6 +9,7 @@ import {
   PilotSnapshotV1Schema,
   PRICECATCHER_TRANSFORM_VERSION,
   RecommendationInputSchema,
+  RecommendationRequestSchema,
   RecommendationResultSchema,
   SenSchema,
   SignedSenSchema,
@@ -16,6 +17,7 @@ import {
   SourceManifestV1Schema,
   validateDistanceFeasibilityReport
 } from '../contracts'
+import { validInput } from './snapshotFixture'
 
 const source = {
   url: 'https://storage.data.gov.my/pricecatcher/pricecatcher_2026-08.csv',
@@ -135,6 +137,66 @@ const expectOnlyIssue = (result: any, expected: { path: PropertyKey[], message: 
 }
 
 describe('runtime contracts', () => {
+  // Break caught: exported strict schemas silently strip reflection-only extras or throw on hostile reflection.
+  it('rejects symbol, non-enumerable, and own __proto__ extras without throwing', () => {
+    const expectSafeFailure = (schema: { safeParse: (value: unknown) => { success: boolean } }, value: unknown, name: string): void => {
+      let result: { success: boolean } | undefined
+      expect(() => { result = schema.safeParse(value) }, name).not.toThrow()
+      expect(result?.success, name).toBe(false)
+    }
+    const addExtra = (target: object, kind: 'symbol' | 'hidden' | '__proto__'): void => {
+      const key = kind === 'symbol' ? Symbol('extra') : kind === 'hidden' ? 'hidden' : '__proto__'
+      Object.defineProperty(target, key, { configurable: true, enumerable: kind !== 'hidden', value: true })
+    }
+
+    const boundaries: Array<[string, (input: ReturnType<typeof validInput>) => object]> = [
+      ['top', input => input],
+      ['location', input => input.location],
+      ['lines array', input => input.lines],
+      ['line', input => input.lines[0]!],
+      ['fixed map', input => input.fixedTripCostByPremiseCode!],
+      ['fixed entry', input => input.fixedTripCostByPremiseCode!['2']!]
+    ]
+    for (const [schemaName, schema] of [['request', RecommendationRequestSchema], ['input', RecommendationInputSchema]] as const) {
+      for (const [boundaryName, select] of boundaries) {
+        for (const kind of ['symbol', 'hidden', '__proto__'] as const) {
+          const input = validInput()
+          addExtra(select(input), kind)
+          expectSafeFailure(schema, input, `${schemaName} ${boundaryName} ${kind}`)
+        }
+      }
+    }
+
+    for (const [trapName, handler] of [
+      ['getPrototypeOf', { getPrototypeOf: () => { throw new Error('prototype trap') } }],
+      ['ownKeys', { ownKeys: () => { throw new Error('keys trap') } }],
+      ['getOwnPropertyDescriptor', { getOwnPropertyDescriptor: () => { throw new Error('descriptor trap') } }]
+    ] as const) {
+      for (const [schemaName, schema] of [['request', RecommendationRequestSchema], ['input', RecommendationInputSchema]] as const) {
+        expectSafeFailure(schema, new Proxy(validInput(), handler), `${schemaName} top ${trapName}`)
+        const nested = validInput()
+        nested.lines[0] = new Proxy(nested.lines[0]!, handler)
+        expectSafeFailure(schema, nested, `${schemaName} line ${trapName}`)
+      }
+    }
+  })
+
+  it('keeps request semantics loose while enforcing canonical fixed-map keys in strict inputs', () => {
+    expect(RecommendationRequestSchema.safeParse({ location: 42, lines: 'not-an-array', mode: { malformed: true } }).success).toBe(true)
+
+    for (const key of ['constructor', '__proto__']) {
+      const input = validInput()
+      Object.defineProperty(input.fixedTripCostByPremiseCode!, key, {
+        configurable: true, enumerable: true, value: { status: 'confirmed', amountSen: 0 }
+      })
+      expect(RecommendationInputSchema.safeParse(input).success, key).toBe(false)
+    }
+
+    const maximum = validInput()
+    maximum.fixedTripCostByPremiseCode!['9007199254740991'] = { status: 'confirmed', amountSen: 0 }
+    expect(RecommendationInputSchema.safeParse(maximum).success).toBe(true)
+  })
+
   it('accepts a complete Version 1 snapshot and pointer', () => {
     expect(PilotSnapshotV1Schema.parse(snapshot).schemaVersion).toBe(1)
     expect(CurrentSnapshotPointerV1Schema.parse({

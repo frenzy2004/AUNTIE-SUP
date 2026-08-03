@@ -6,7 +6,8 @@ import { RecommendationResultSchema } from '../contracts/recommendation'
 import { PilotSnapshotV1Schema, type PilotSnapshotV1 } from '../contracts/snapshot'
 import {
   drivingInput, eligibleCell, goldenInput, goldenSnapshot, goldenSnapshotWithMode,
-  inputWithoutTripFields, priceOnlyDrivingInput, snapshotWherePriceAndTripWinnersDiffer
+  inputWithoutTripFields, priceOnlyDrivingInput, snapshotWherePriceAndTripWinnersDiffer,
+  fixedDescriptorMutationProbe, lineDescriptorMutationProbe
 } from './snapshotFixture'
 
 const OBSERVED_DATE = '2026-08-02' as const
@@ -596,6 +597,26 @@ describe('PriceCatcher recommendation selection', () => {
     expect([...descriptorCalls.values()]).toEqual(Array.from({ length: Reflect.ownKeys(target).length }, () => 1))
   })
 
+  // Break caught: recommendation observes a line rewrite caused by the later mode descriptor.
+  it('recommends from the line captured before a later mode descriptor trap', () => {
+    const probe = lineDescriptorMutationProbe(goldenInput())
+    expect(recommend(goldenSnapshot(), probe.request)).toMatchObject({ kind: 'switch' })
+    expect(probe.events.indexOf('line:itemCode')).toBeLessThan(probe.events.indexOf('top:mode'))
+    for (const event of ['line:itemCode', 'line:quantityHundredths', 'top:mode']) {
+      expect(probe.descriptorCalls.get(event), event).toBe(1)
+    }
+  })
+
+  // Break caught: recommendation changes to comparison-only after the threshold descriptor rewrites a fixed entry.
+  it('recommends from fixed costs captured before a later threshold descriptor trap', () => {
+    const probe = fixedDescriptorMutationProbe(goldenInput())
+    expect(recommend(goldenSnapshot(), probe.request)).toMatchObject({ kind: 'switch' })
+    expect(probe.events.indexOf('fixed-entry:status')).toBeLessThan(probe.events.indexOf('top:worthwhileThresholdSen'))
+    for (const event of ['top:fixedTripCostByPremiseCode', 'fixed-map:2', 'fixed-entry:status', 'fixed-entry:amountSen', 'top:worthwhileThresholdSen']) {
+      expect(probe.descriptorCalls.get(event), event).toBe(1)
+    }
+  })
+
   // Break caught: reflection failures or revoked Proxies escape instead of returning the exact invalid result.
   it.each([
     ['ownKeys trap', () => new Proxy(goldenInput(), { ownKeys: () => { throw new Error('ownKeys') } })],
@@ -684,9 +705,12 @@ describe('PriceCatcher recommendation selection', () => {
 
   // Break caught: malformed canonical values throw or an own __proto__ fixed-cost entry is silently ignored.
   it('returns the exact invalid result for malformed code boundaries', () => {
+    const veryLongCode = '9'.repeat(100_000)
     const malformed: Array<{ name: string; build: () => unknown }> = [
       { name: 'usual premise', build: () => ({ ...goldenInput(), usualPremiseCode: 'abc' }) },
       { name: 'basket line', build: () => ({ ...goldenInput(), lines: [{ itemCode: '1.2', quantityHundredths: 100 }] }) },
+      { name: 'very-long usual premise', build: () => ({ ...goldenInput(), usualPremiseCode: veryLongCode }) },
+      { name: 'very-long basket line', build: () => ({ ...goldenInput(), lines: [{ itemCode: veryLongCode, quantityHundredths: 100 }] }) },
       ...(['constructor', '__proto__'] as const).map(key => ({
         name: `${key} fixed-cost key`,
         build: () => {
@@ -700,6 +724,11 @@ describe('PriceCatcher recommendation selection', () => {
       { name: 'out-of-range fixed-cost key', build: () => {
         const request = goldenInput()
         request.fixedTripCostByPremiseCode!['9007199254740992'] = { status: 'confirmed', amountSen: 0 }
+        return request
+      } },
+      { name: 'very-long fixed-cost key', build: () => {
+        const request = goldenInput()
+        request.fixedTripCostByPremiseCode![veryLongCode] = { status: 'confirmed', amountSen: 0 }
         return request
       } }
     ]
