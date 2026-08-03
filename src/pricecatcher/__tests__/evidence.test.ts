@@ -174,8 +174,20 @@ describe('evidence evaluation', () => {
     expect(result).toMatchObject({ kind: 'ready', comparisonOnlyReasons: ['selected-items-only', 'walking-route-unverified', 'publication-not-consumer-ready'] })
   })
 
-  it('rejects missing trip assumptions only for an otherwise trip-eligible drive', () => {
-    expect(evaluateEvidence(makeSnapshot(), validInput({ fuelEfficiencyDeciKmPerL: undefined }))).toMatchObject({ kind: 'insufficient-evidence', primaryReason: 'input-invalid' })
+  // Break caught: the efficiency-only 120 default is rejected before recommendation arithmetic can apply it.
+  it('keeps an otherwise trip-eligible drive ready when only efficiency is absent', () => {
+    expect(evaluateEvidence(makeSnapshot(), validInput({ fuelEfficiencyDeciKmPerL: undefined }))).toMatchObject({ kind: 'ready', comparisonOnlyReasons: [] })
+  })
+
+  // Break caught: the absent optional efficiency hides a present unknown fixed cost.
+  it('retains the unknown-fixed comparison reason when efficiency is absent', () => {
+    expect(evaluateEvidence(makeSnapshot(), validInput({
+      fuelEfficiencyDeciKmPerL: undefined,
+      fixedTripCostByPremiseCode: {
+        '1': { status: 'confirmed', amountSen: 0 },
+        '2': { status: 'unknown' }
+      }
+    }))).toMatchObject({ kind: 'ready', comparisonOnlyReasons: ['fixed-trip-cost-unknown'] })
   })
 
   it.each([

@@ -342,7 +342,7 @@ const comparisonOnlyReasons = (snapshot: PilotSnapshotV1, input: RecommendationI
   if (reasons.length === 0) {
     const required = compared.map(candidate => candidate.premiseCode)
     const costs = input.fixedTripCostByPremiseCode
-    if (!costs || required.some(code => costs[code] === undefined) || input.fuelEfficiencyDeciKmPerL === undefined || input.fuelPriceSenPerL === undefined || input.worthwhileThresholdSen === undefined) return reasons
+    if (!costs || required.some(code => costs[code] === undefined) || input.fuelPriceSenPerL === undefined || input.worthwhileThresholdSen === undefined) return reasons
     if (required.some(code => costs[code]!.status === 'unknown')) reasons.push('fixed-trip-cost-unknown')
   }
   return reasons
@@ -362,7 +362,7 @@ export function evaluateEvidence(snapshot: PilotSnapshotV1, request: Recommendat
   if (enumerated.exclusions!.inRadiusCandidateCount === 0) return { kind: 'insufficient-evidence', primaryReason: 'no-candidate-in-radius', details: [], exclusions: enumerated.exclusions }
   if (enumerated.candidates.length === 0) return { kind: 'insufficient-evidence', primaryReason: candidateReason(enumerated.exclusions!), details: enumerated.details, exclusions: enumerated.exclusions }
   const reasons = comparisonOnlyReasons(snapshot, input, common.evaluatedDate, [enumerated.usual, ...enumerated.candidates])
-  if (reasons.length === 0 && (input.fuelEfficiencyDeciKmPerL === undefined || input.fuelPriceSenPerL === undefined || input.worthwhileThresholdSen === undefined ||
+  if (reasons.length === 0 && (input.fuelPriceSenPerL === undefined || input.worthwhileThresholdSen === undefined ||
       !input.fixedTripCostByPremiseCode || ![enumerated.usual, ...enumerated.candidates].every(candidate => input.fixedTripCostByPremiseCode![candidate.premiseCode]))) {
     return { kind: 'insufficient-evidence', primaryReason: 'input-invalid', details: [] }
   }

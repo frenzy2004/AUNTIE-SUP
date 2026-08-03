@@ -103,3 +103,82 @@ export function snapshotWithMixedCandidateFailures(): PilotSnapshotV1 {
   const extra = { ...snapshot.premises[1]!, code: '3', officialName: 'Missing', displayName: 'Missing', address: '3 Test Street', longitude: 101.02 }
   return { ...snapshot, premises: [...snapshot.premises, extra], evidence: [snapshot.evidence[0]!, { premiseCode: '2', itemCode: '10', officialUnit: 'each', observations: [{ status: 'eligible', observedDate: PRIOR, priceSen: 500 }, { status: 'anomalous', observedDate: DATE, reason: 'outside-ratio-bound' }] }, { premiseCode: '3', itemCode: '10', officialUnit: 'each', observations: [{ status: 'missing', observedDate: PRIOR }, { status: 'missing', observedDate: DATE }] }] }
 }
+
+export function goldenSnapshot(): PilotSnapshotV1 {
+  const snapshot = makeSnapshot()
+  return {
+    ...snapshot,
+    buildId: 'golden-consumer-test',
+    premises: snapshot.premises.map(premise => premise.code === '1'
+      ? { ...premise, latitude: 0, longitude: 0 }
+      : { ...premise, latitude: 0, longitude: 0.0089932 }),
+    evidence: [eligibleCell('1', '10', DATE, 1000), eligibleCell('2', '10', DATE, 700)]
+  }
+}
+
+export function goldenSnapshotWithMode(mode: 'fixture' | 'desk-demo'): PilotSnapshotV1 {
+  return { ...goldenSnapshot(), publicationMode: mode }
+}
+
+export function goldenInput(overrides: Partial<RecommendationInput> = {}): RecommendationInput {
+  return {
+    evaluatedAt: '2026-08-03T03:00:00.000Z',
+    location: { latitude: 0, longitude: 0, accuracyMetres: 10 },
+    usualPremiseCode: '1',
+    basketScope: 'complete-trip',
+    lines: [{ itemCode: '10', quantityHundredths: 100 }],
+    mode: 'drive',
+    fuelEfficiencyDeciKmPerL: 120,
+    fuelPriceSenPerL: 205,
+    fixedTripCostByPremiseCode: {
+      '1': { status: 'confirmed', amountSen: 0 },
+      '2': { status: 'confirmed', amountSen: 0 },
+      '3': { status: 'confirmed', amountSen: 0 }
+    },
+    worthwhileThresholdSen: 200,
+    ...overrides
+  }
+}
+
+export function inputWithoutTripFields(overrides: Partial<RecommendationInput> = {}): RecommendationInput {
+  const {
+    fuelEfficiencyDeciKmPerL: _fuelEfficiencyDeciKmPerL,
+    fuelPriceSenPerL: _fuelPriceSenPerL,
+    fixedTripCostByPremiseCode: _fixedTripCostByPremiseCode,
+    worthwhileThresholdSen: _worthwhileThresholdSen,
+    ...input
+  } = goldenInput(overrides)
+  return input
+}
+
+export function snapshotWherePriceAndTripWinnersDiffer(): PilotSnapshotV1 {
+  const snapshot = goldenSnapshot()
+  const candidate = snapshot.premises.find(premise => premise.code === '2')!
+  const third = {
+    ...candidate,
+    code: '3',
+    officialName: 'Near candidate',
+    displayName: 'Near candidate',
+    address: '3 Test Street',
+    longitude: 0.0044966
+  }
+  return {
+    ...snapshot,
+    premises: snapshot.premises.map(premise => premise.code === '2'
+      ? { ...premise, officialName: 'Cheap far candidate', displayName: 'Cheap far candidate', longitude: 0.0359728 }
+      : premise).concat(third),
+    evidence: [
+      eligibleCell('1', '10', DATE, 1000),
+      eligibleCell('2', '10', DATE, 600),
+      eligibleCell('3', '10', DATE, 700)
+    ]
+  }
+}
+
+export function priceOnlyDrivingInput(): RecommendationInput {
+  return goldenInput({ basketScope: 'selected-items-only' })
+}
+
+export function drivingInput(): RecommendationInput {
+  return goldenInput()
+}
