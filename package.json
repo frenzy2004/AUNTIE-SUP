@@ -31,6 +31,7 @@
     "data:saves:feasibility": "tsx scripts/pricecatcher/feasibility.ts",
     "data:saves:fixture": "tsx scripts/pricecatcher/generate-fixture.ts",
     "data:saves:e2e-fixtures": "tsx scripts/pricecatcher/generate-e2e-fixtures.ts",
+    "data:saves:smoke": "tsx scripts/pricecatcher/runtime-smoke.ts",
     "verify:saves:clean-reproduction": "tsx scripts/pricecatcher/verify-clean-reproduction.ts",
     "verify:saves": "npm run typecheck:saves && npm run test:saves && npm run data:saves:e2e-fixtures -- --check && npm run build:saves && npm run build:saves:e2e && tsx scripts/pricecatcher/verify-saves-boundary.ts && playwright test --config playwright.saves.config.ts"
   },
@@ -39,7 +40,7 @@
     "csv-parse": "^7.0.2",
     "electron-store": "^8.2.0",
     "exa-js": "^1.4.0",
-    "openai": "^4.77.0",
+    "openai": "^6.49.0",
     "whois-json": "^2.0.4",
     "zod": "^4.4.3"
   },

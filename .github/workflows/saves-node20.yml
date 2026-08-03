@@ -10,6 +10,12 @@ on:
       - 'src/saves/**'
       - 'src/pricecatcher/**'
       - 'scripts/pricecatcher/**'
+      - 'tsconfig.saves.json'
+      - 'tsconfig.pricecatcher.json'
+      - 'tsconfig.pricecatcher-node.json'
+      - 'tsconfig.saves-e2e.json'
+      - 'vitest.config.ts'
+      - 'vitest.saves.config.ts'
       - '.github/workflows/saves-node20.yml'
 
 jobs:

@@ -37,7 +37,7 @@ const officialUrls = {
   transaction: (yearMonth: string) => `https://storage.data.gov.my/pricecatcher/pricecatcher_${yearMonth}.csv`
 }
 
-export const SourceLockV1Schema = z.object({
+const SourceLockV1Shape = z.object({
   schemaVersion: z.literal(1),
   sourceKind: z.enum(['official', 'synthetic-fixture']),
   throughDate: LocalDateSchema,
@@ -46,7 +46,9 @@ export const SourceLockV1Schema = z.object({
   sources: z.array(z.discriminatedUnion('role', [
     TransactionSourceV1Schema, PremiseLookupSourceV1Schema, ItemLookupSourceV1Schema
   ])).min(3)
-}).strict().superRefine((value, context) => {
+}).strict()
+
+const validateSourceLock = (value: z.infer<typeof SourceLockV1Shape>, context: z.RefinementCtx, extended: boolean) => {
   const transactions = value.sources.filter((source): source is z.infer<typeof TransactionSourceV1Schema> => source.role === 'transactions')
   const premiseLookups = value.sources.filter(source => source.role === 'premise-lookup')
   const itemLookups = value.sources.filter(source => source.role === 'item-lookup')
@@ -58,8 +60,8 @@ export const SourceLockV1Schema = z.object({
   if (value.window === 'public' && value.analysisStartDate !== addDays(value.throughDate, -31)) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ['analysisStartDate'], message: 'public lock starts exactly 31 days before through date' })
   }
-  if (value.window === 'feasibility' && value.analysisStartDate > addDays(value.throughDate, -59)) {
-    context.addIssue({ code: z.ZodIssueCode.custom, path: ['analysisStartDate'], message: 'feasibility lock starts at least 59 days before through date' })
+  if (value.window === 'feasibility' && (extended ? value.analysisStartDate > addDays(value.throughDate, -59) : value.analysisStartDate !== addDays(value.throughDate, -59))) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['analysisStartDate'], message: extended ? 'extended feasibility lock starts no later than 59 days before through date' : 'bootstrap feasibility lock starts exactly 59 days before through date' })
   }
   for (const source of value.sources) {
     if (value.sourceKind === 'official') {
@@ -72,6 +74,12 @@ export const SourceLockV1Schema = z.object({
       }
     }
   }
+}
+
+export const SourceLockV1Schema = SourceLockV1Shape.superRefine((value, context) => validateSourceLock(value, context, false))
+export const ExtendedSourceLockV1Schema = SourceLockV1Shape.superRefine((value, context) => {
+  if (value.window !== 'feasibility') context.addIssue({ code: z.ZodIssueCode.custom, path: ['window'], message: 'only feasibility locks may be extended' })
+  validateSourceLock(value, context, true)
 })
 
 export const canonicalizeSourceLockV1 = (value: z.input<typeof SourceLockV1Schema>): z.infer<typeof SourceLockV1Schema> => {
@@ -85,6 +93,15 @@ export const canonicalizeSourceLockV1 = (value: z.input<typeof SourceLockV1Schem
       return left.role === 'transactions' && right.role === 'transactions' ? left.yearMonth.localeCompare(right.yearMonth) : 0
     })
   }
+}
+
+export const canonicalizeExtendedSourceLockV1 = (value: z.input<typeof ExtendedSourceLockV1Schema>): z.infer<typeof ExtendedSourceLockV1Schema> => {
+  const lock = ExtendedSourceLockV1Schema.parse(value)
+  return { ...lock, sources: [...lock.sources].sort((left, right) => {
+    const rank = (source: typeof left): number => source.role === 'transactions' ? 0 : source.role === 'premise-lookup' ? 1 : 2
+    const rankDifference = rank(left) - rank(right)
+    return rankDifference !== 0 ? rankDifference : left.role === 'transactions' && right.role === 'transactions' ? left.yearMonth.localeCompare(right.yearMonth) : 0
+  }) }
 }
 
 export type SourceLockV1 = z.infer<typeof SourceLockV1Schema>
