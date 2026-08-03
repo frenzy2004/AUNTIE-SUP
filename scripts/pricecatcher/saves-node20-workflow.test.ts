@@ -7,17 +7,21 @@ describe('Saves Node 20 workflow', () => {
     const workflow = JSON.parse(await readFile(new URL('../../.github/workflows/saves-node20.yml', import.meta.url), 'utf8'))
 
     const steps = workflow.jobs['saves-node20'].steps
-    expect(steps).toContainEqual({ uses: 'actions/setup-node@v4', with: { 'node-version': '20' } })
+    expect(workflow.on.push).toEqual({ branches: ['UPGRADES'] })
+    expect(workflow.on.pull_request).toEqual({ paths: [
+      'package.json', 'package-lock.json', 'src/saves/**', 'src/pricecatcher/**', 'scripts/pricecatcher/**',
+      'tsconfig.saves.json', 'tsconfig.pricecatcher.json', 'tsconfig.pricecatcher-node.json', 'tsconfig.saves-e2e.json',
+      'vitest.config.ts', 'vitest.saves.config.ts', '.github/workflows/saves-node20.yml'
+    ] })
+    expect(new Set(workflow.on.pull_request.paths).size).toBe(workflow.on.pull_request.paths.length)
+    expect(steps.filter((step: Record<string, string>) => step.uses === 'actions/setup-node@v4')).toEqual([
+      { uses: 'actions/setup-node@v4', with: { 'node-version': '20' } }
+    ])
     expect(steps.filter((step: Record<string, string>) => 'run' in step).map((step: { run: string }) => step.run)).toEqual([
       'npm ci',
       'npm run typecheck:saves',
       'npm run test:saves -- src/pricecatcher/__tests__/contracts.test.ts scripts/pricecatcher/saves-node20-workflow.test.ts'
     ])
-    expect(workflow.on.pull_request.paths).toEqual(expect.arrayContaining([
-      'package.json', 'package-lock.json', 'src/saves/**', 'src/pricecatcher/**', 'scripts/pricecatcher/**',
-      'tsconfig.saves.json', 'tsconfig.pricecatcher.json', 'tsconfig.pricecatcher-node.json', 'tsconfig.saves-e2e.json',
-      'vitest.config.ts', 'vitest.saves.config.ts', '.github/workflows/saves-node20.yml'
-    ]))
   })
 
   it('runs a Node PriceCatcher entrypoint through its package command', async () => {
