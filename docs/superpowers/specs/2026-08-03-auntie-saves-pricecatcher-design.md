@@ -66,13 +66,13 @@ Those are separate Gauntlet rounds after the pilot proves that reliable, meaning
 
 The landing screen explains the contract in one sentence: “AUNTIE compares recently checked government prices; stock and checkout prices may have changed.”
 
-The user may grant one-shot browser location access. The app requests high accuracy and accepts an origin for a trip result only when the browser reports accuracy of 100 metres or better. It does not persist precise location. If permission is denied, inaccurate, or unavailable, the user may still explore the curated catalogue, but the app cannot issue a travel-adjusted `switch` or `no-clear-advantage` result. The refusal explains that a sufficiently precise origin is required; the pilot does not pretend a district or postcode centroid is the user's home. Geolocation acceptance is tested on localhost, and real mobile use requires the later HTTPS field deployment.
+Before the permission button, the app says the location is used once to find nearby pilot shops, stays in the current tab, and is not stored or sent. The user may then grant one-shot browser location access. The app requests high accuracy and accepts an origin for a trip result only when the browser reports accuracy of 100 metres or better. It does not persist precise location. If permission is denied, inaccurate, or unavailable, the user may still explore the curated catalogue, but the app cannot issue a travel-adjusted `switch` or `no-clear-advantage` result. The refusal explains that a sufficiently precise origin is required; the pilot does not pretend a district or postcode centroid is the user's home. Geolocation acceptance is tested on localhost, and real mobile use requires the later HTTPS field deployment.
 
 ### 5.2 Choose the baseline
 
-The app lists only manually verified pilot premises near the selected location. The user chooses their usual shop. A savings claim is never made without this explicit baseline.
+The app lists only manually verified pilot premises near the selected location. The selector starts on a disabled “Choose your usual shop” placeholder; the user must explicitly choose their usual shop, and the first branch is never silently selected. A savings claim is never made without this explicit baseline.
 
-An immediate eligibility preflight shows whether the usual shop has recent pilot data and how many coordinate-verified premises are initially viable. As the user adds each basket line, the UI updates the number of premises that still have complete eligible coverage. The user sees an inevitable refusal before filling the whole form, not only after pressing calculate.
+An immediate eligibility preflight shows whether the usual shop has recent pilot data and how many coordinate-verified premises lie within the pilot's fixed 5 km discovery radius; it runs before a basket or travel mode exists and makes no completeness/route claim. After the first basket line but before mode selection, a separate basket discovery count applies full same-date completeness under that explicitly labelled 5 km discovery radius without pretending driving was chosen. Walking or driving begins unselected. Once the user chooses one, the count switches to the selected mode's exact 2 km/5 km radius. The user sees an inevitable refusal before filling the whole form, not only after pressing calculate.
 
 ### 5.3 Build the basket
 
@@ -82,7 +82,7 @@ Before calculation, the app asks whether every intended purchase for this small 
 
 ### 5.4 Decide
 
-The user selects walking or driving and may change a minimum worthwhile net saving, defaulting to RM5. For driving, the app exposes editable fuel-price and fuel-efficiency assumptions. After data eligibility is known, it requests a premise-specific toll/parking status for the usual shop and every viable in-radius candidate. A confirmed RM0 means the user asserts no fixed cost; “unknown” is distinct and downgrades the result to comparison-only. Walking produces price-only comparison in this phase because the app has no evidence that a straight-line path is safely traversable.
+The user explicitly selects walking or driving from an initially unselected labelled group. When publication/scope/mode already forces a price-only result—fixture or desk data, selected-items-only scope, or walking—the app does not ask for fuel, threshold, toll, or parking values that cannot affect that result. Only an otherwise trip-eligible consumer complete-trip drive exposes a minimum worthwhile net saving (default RM5), fuel price in RM/litre, efficiency in km/litre, and premise-specific toll/parking status for the usual shop and every viable in-radius candidate. Every premise starts with neither confirmed nor unknown selected. The user must affirmatively choose; a confirmed RM0 means the user asserts the total toll and parking for a dedicated round trip from the current location to that branch, excluding fuel, is zero. “Unknown” is distinct and downgrades that consumer attempt to comparison-only. Walking produces price-only comparison in this phase because the app has no evidence that a straight-line path is safely traversable.
 
 The result is one of four states:
 
@@ -91,7 +91,7 @@ The result is one of four states:
 - **Selected-items comparison:** “These 6 monitored items cost less at X. AUNTIE cannot judge the whole trip because other items are not covered.”
 - **No reliable comparison:** an explicit reason such as incomplete basket coverage, stale observations, an unresolved price anomaly, or no verified nearby premise.
 
-The recommendation headline rounds net saving to the nearest ringgit because travel is estimated. The expanded result preserves observed line and basket prices to the sen, shows estimated trip cost to the nearest ten sen, and exposes the unrounded integer-sen inputs used for the threshold decision. It also shows observation dates, source retrieval/compilation times, distance/travel assumptions, attribution, and the price/stock disclaimer.
+The recommendation headline names the candidate shop and rounds net saving to the nearest ringgit because travel is estimated. Every comparison identifies the usual and candidate shops by verified display name, gives both addresses, and shows both straight-line distances; trip results additionally show estimated round-trip road distances. Refusal details likewise resolve premise/item codes to human shop and official item/unit labels. Raw codes are evidence identifiers, never the only actionable label. The expanded result preserves observed line and basket prices to the sen, shows estimated trip cost to the nearest ten sen, and exposes the unrounded integer-sen inputs used for the threshold decision. It also shows observation dates, source retrieval/compilation times, distance/travel assumptions from the exact submitted input, attribution, and the price/stock disclaimer. A verdict is one atomic `{snapshotBuildId, submittedInput, result}` record; rendering fails closed if the supplied snapshot has another build ID. Any later location, shop, basket, raw numeric edit (even invalid/intermediate text), scope, mode, assumption, snapshot change, or next Malaysia date boundary removes it and asks the user to calculate again. Visibility resume compares both instants through `malaysiaDateAt` so a sleeping tab cannot retain a stale action.
 
 ## 6. Architecture
 
@@ -115,7 +115,7 @@ A dedicated Vite configuration and `dev:saves`, `build:saves`, and `preview:save
 
 The integration is normative:
 
-- `vite.saves.config.ts` uses `root: 'src/saves'`, `base: './'`, `envDir: false`, `outDir: '../../dist/saves'`, `emptyOutDir: true`, the React plugin, and an `@pricecatcher` alias to `src/pricecatcher`.
+- `vite.saves.config.ts` uses `root: 'src/saves'`, `base: './'`, the committed empty string-valued `envDir` at `config/saves-env`, `outDir: '../../dist/saves'`, `emptyOutDir: true`, the React plugin, and an `@pricecatcher` alias to `src/pricecatcher`. A separate `saves-e2e` mode builds a test-only assembly entry to `dist/saves-e2e`; the normal output cannot contain that entry or its fixed clock.
 - `tsconfig.saves.json` covers `src/saves/**/*` and `src/pricecatcher/**/*`; node-side type-checking covers `src/pricecatcher/**/*` and `scripts/pricecatcher/**/*`.
 - `typecheck:saves` runs both type-checks. `build:saves` runs `typecheck:saves` before the Vite build.
 - `verify:saves` runs type-checking, domain/compiler/component tests, production build, module/bundle boundary checks, and production-preview end-to-end checks.
@@ -135,7 +135,7 @@ The integration is normative:
 
 `scripts/pricecatcher` owns network and filesystem work. It downloads official files, validates their schemas, records source URLs and timestamps, joins lookup tables, and produces a compact static pilot snapshot plus an audit report.
 
-`src/saves` consumes only the compiled snapshot and domain API. It never receives API credentials and never fetches OpenAI or Exa directly.
+`src/saves` consumes only the compiled snapshot and domain API. It never receives API credentials and never fetches OpenAI or Exa directly. Every snapshot declares `publicationMode = fixture | desk-demo | consumer-pilot`. Fixture and desk-demo modes are visibly non-consumer and force price-only comparison; only a separately authorized consumer-pilot artifact may return trip verdicts.
 
 The Saves build has a structural import boundary: it may import React and `src/pricecatcher`, but never Electron main/preload/renderer/judge code or the `electron`, `openai`, `exa-js`, `electron-store`, or `apify-client` packages. Static HTML enforces the supported CSP directives `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'` and `Referrer-Policy: no-referrer`. The later HTTPS host must send the same CSP as a response header plus `frame-ancestors 'none'`, which is not enforceable through a meta tag. No third-party script, font, image, or analytics request is permitted.
 
@@ -149,15 +149,17 @@ The compiler accepts:
 - premise lookup: <https://data.gov.my/data-catalogue/lookup_premise>
 - item lookup: <https://data.gov.my/data-catalogue/lookup_item>
 
-Every compiled snapshot records source URLs, source observation-date range, latest included pilot observation date, compilation time, transformation version, and the required CC BY 4.0 attribution. `dataAsOfDate` is the maximum non-future observation date among lookup-joined selected pilot rows after basic identifier/price parsing but before quality screening; Selangor reference-only rows cannot advance it. The public target horizon is exactly `dataAsOfDate` and the immediately preceding Malaysia calendar date. The visible copy is: “PriceCatcher Transactional Records, Premise Lookup, and Item Lookup — KPDN and DOSM via data.gov.my, CC BY 4.0; retrieved [date]; observations [min date]–[max date]; filtered and transformed by AUNTIE Saves. Prices and stock may have changed.” Dataset and license names are links. Coordinate-source attribution and redistribution terms are recorded separately.
+Every compiled snapshot records source URLs, source observation-date range, latest included pilot observation date, compilation time, transformation version, publication mode, and the required CC BY 4.0 attribution. `dataAsOfDate` is the maximum non-future observation date among lookup-joined selected pilot rows after basic identifier/price parsing but before quality screening; Selangor reference-only rows cannot advance it. The public target horizon is exactly `dataAsOfDate` and the immediately preceding Malaysia calendar date. The visible copy is: “PriceCatcher Transactional Records, Premise Lookup, and Item Lookup — KPDN and DOSM via data.gov.my, CC BY 4.0; retrieved [date]; observations [min date]–[max date]; filtered and transformed by AUNTIE Saves. Prices and stock may have changed.” All three dataset names and the license are distinct typed links. Coordinate-source attribution and redistribution terms are recorded separately.
 
-Fetching and compilation are separate adapters. `data:saves:fetch` downloads all monthly files intersecting any target observation's preceding 30-date reference window, streams them with the declared `csv-parse` package, computes their hashes, and stores immutable bytes by SHA-256. `data:saves:compile` accepts only pinned local file paths plus an injected clock. `data:saves:refresh` runs fetch then compile. This keeps network behavior out of deterministic tests.
+Fetching and compilation are separate adapters. `data:saves:fetch` downloads every canonical month touched by an explicit `analysisStartDate…throughDate`, streams it with the declared `csv-parse` package, computes hashes, and stores immutable bytes by SHA-256. A public lock begins exactly 31 dates before through; a feasibility bootstrap begins 59 dates before through and may be extended earlier. A strict source lock binds both dates, window, exact official role/URL/month, retrieval instant, validators, and hashes; rows after the cutoff or injected Malaysia compile date are counted separately and cannot select the horizon. Any 14-day coverage report requires a bound lock beginning no later than `H − 13`; selected coverage/Phase B require the stronger `H − 59`. `data:saves:compile` accepts only the lock plus pinned local bytes and an injected clock. Post-curation `data:saves:refresh` fetches the bootstrap, runs a non-emitting selected-content horizon probe, extends the lock through `H − 59` when necessary, then emits final selected coverage, distance feasibility, and audit/review-basis collection. It cannot stage, activate, or rewrite the original candidate-era source-lock/report/selection provenance; stage and reproduction recheck that candidate lock against its historical 14-day report. This keeps network behavior out of deterministic tests and prevents an out-of-lock date from being treated as a missing observation.
 
 The large downloaded source files, staging directories, and hash-addressed raw archive remain untracked and are explicitly covered by `.gitignore`. A committed source lock records every download URL, SHA-256 digest, byte length, retrieval time, and ETag or Last-Modified value when supplied. The repository also commits a normalized reference-and-pilot source slice, the curated coordinate file, the compact pilot output needed for the demo, and its private audit report. The slice contains every selected pilot row on the two public target dates plus every retained Selangor reference row on the 30 dates preceding each target date—an overall maximum span from `dataAsOfDate − 31 dates` through `dataAsOfDate`. Acceptance means reproducible given the recorded input bytes; mutable official URLs alone are not treated as an archive.
 
-Compilation maintains two explicit row universes. `referenceRows` contains curated item codes across all lookup-joined, allowed one-operator Selangor premises and is used only for quality distributions. `pilotRows` is the subset whose premise codes appear in the approved pilot content and is the only universe evaluated or published. Feasibility reporting uses a separate declared 14/30-date analysis mode and never changes the two-date public snapshot horizon.
+Compilation maintains two explicit row universes. `referenceRows` contains curated item codes across all lookup-joined, allowed one-operator Selangor premises and is used only for quality distributions. `pilotRows` is the subset whose premise codes appear in the approved pilot content and is the only universe evaluated or published. Canonical lookup codes must be unique: exact duplicate rows collapse only when all normalized official fields agree; conflicting `2`/`2.0`-style collisions fail before a join. Feasibility reporting uses a separate declared 14/30-date analysis mode and never changes the two-date public snapshot horizon. Initial `candidate-universe` coverage ranks review candidates. After review, a mandatory `selected-content` coverage pass re-derives the horizon from exactly the accepted premise/item codes and binds their content digests; only that current-transform passing report may feed the 30-target-date distance phase or desk compilation. Candidate selection preserves a canonical copy of the candidate-era source lock. The final stage cross-checks every accepted code's normalized official lookup fields across the current pinned lookup, selected report, original candidate selection, and reviewed content; same-code name/address/type/unit/group/category drift requires a new review rather than silent replacement. The historical candidate report may retain its bound transform only as immutable provenance.
 
-Compilation stages a complete versioned build under one `buildId`. The public snapshot is written to `src/saves/public/data/builds/<buildId>/snapshot.json`; the full audit remains outside the public web root under `data/pricecatcher/pilot/builds/<buildId>/audit.json`. After schema and hash validation, one atomic rename updates `src/saves/public/data/current.json` to point to the versioned snapshot. A failed compile leaves the prior pointer and build untouched.
+Compilation first creates an inert content-addressed stage under one derived `buildId`; it never changes the active pointer. Publication copies the exact snapshot, audit, normalized slice, active source lock, five content files, selected/distance reports, and the exact 13 role-tagged provenance inputs—including the candidate-era source lock—into immutable build destinations, writes a strict final manifest, then reopens, hashes, parses, and cross-validates every final byte. Source-row provenance is bounded to an existing transaction manifest index/month and row count and must resolve to the same premise/item/date in the normalized slice. Only the last atomic rename updates `src/saves/public/data/current.json`. Publication records the prior pointer for a conditional rollback that is allowed only if the expected new build is still active. A failed compile or pre-activation verification leaves the prior pointer untouched.
+
+The final manifest is the clean-clone reproduction authority. Its input roles have fixed immutable destinations and its provenance identity hashes ordered `{role, sha256, byteLength}` entries rather than mutable paths. A tracked-files-only checkout must reproduce the snapshot/audit/normalized hashes without raw downloads, staging, mutable review workspaces, or network access.
 
 At runtime, the app fetches `./data/current.json` and then its same-origin relative snapshot URL. Both responses are parsed from `unknown` with a versioned runtime schema before use. A missing asset, unknown version, build-ID mismatch, or integrity mismatch renders a specific load error. The public snapshot retains the pilot premise/item/date evidence matrix and per-cell rejection status needed to explain missing, stale, anomalous, and insufficient-reference results; the detailed audit and reviewer notes are never shipped to the browser.
 
@@ -174,7 +176,7 @@ Each pilot premise coordinate record includes:
 - canonical premise code;
 - latitude and longitude;
 - verification method and source note;
-- verification date and the identities of the reviewers;
+- verification date and pseudonymous reviewer IDs;
 - official lookup name, current verified display name, accuracy metres, expiry date, and coordinate-source redistribution terms;
 - status of `desk-verified`, `field-verified`, `rejected`, or `needs-review`.
 
@@ -190,9 +192,9 @@ Two independent reviewers classify each curated definition and record every avai
 
 For content selection, the calibration window is the 14 Malaysia calendar dates ending on `dataAsOfDate`. A premise is `near-daily` only when it publishes at least one transaction on 10 of those 14 dates. An item is `high-coverage` only when it appears on at least 10 dates and, on at least 70% of those dates, has observations at 70% or more of the proposed near-daily pilot premises. “Active” means transactional presence in this named window; the lookup tables do not supply an active flag.
 
-Before literal pilot codes are frozen, a committed trailing-30-date feasibility report must demonstrate at least 10 near-daily eligible premises, 5–10 high-coverage item definitions, and at least one same-date complete alternative within 5 driving kilometres on at least 70% of calibration dates for each selected microzone. If it fails, content selection returns to design; the implementation must not quietly relax freshness or completeness.
+Feasibility is two-phase because the official premise lookup has no coordinates. Phase A uses only lookup-joined Petaling Jaya rows of allowed single-operator premise types to identify 10–15 near-daily premise candidates and 5–10 high-coverage item candidates; it cannot claim a distance result. After independent coordinate/item review creates draft microzones, Phase B evaluates 30 target dates ending on `dataAsOfDate`. For every approved baseline premise in a microzone and every target date, success requires the baseline plus at least one different approved premise within 5,000 metres to have a same-date complete quality-eligible basket across every approved item. A microzone's rate is the minimum successful-date rate across its baselines and must be at least 70%. Because the earliest of those 30 targets needs its own preceding 30-date quality reference, Phase B fetches and retains up to 60 dates (`dataAsOfDate − 59` through `dataAsOfDate`). If either phase fails, content selection returns to design; the implementation must not quietly relax freshness or completeness.
 
-Curated content is versioned separately from code in `microzones.json`, `premises.json`, and `items.json`, each with a runtime schema. `microzones.json` contains labels and geographic bounds for exploration only, never a substitute user origin. `premises.json` contains the private verification evidence and public-safe fields; only its projected public fields enter the snapshot. `items.json` contains literal item codes, official labels/units, quantity mode, qualifiers, and independent semantic-review status. Software can be complete against fixtures before this human-owned content gate is complete; a desk-demo build additionally requires all listed codes and premises to pass review, while a consumer pilot requires field-verified premises.
+Curated content is versioned separately from code in `microzones.json`, `premises.json`, and `items.json`, each with a runtime schema. `microzones.json` contains labels and geographic bounds for exploration only, never a substitute user origin. `premises.json` contains repository-safe pseudonymous verification attestations and public-safe fields; only its projected public fields enter the snapshot. `items.json` contains literal item codes, official labels/units, quantity mode, qualifiers, and independent semantic-review status. Personal reviewer identities, participant data, photos, embedded media, restricted-source notes, and local filesystem paths are never committed. Software can be complete against fixtures before this human-owned content gate is complete; a desk-demo build additionally requires all listed codes and premises to pass review, while a consumer pilot requires field-verified premises.
 
 ### 7.5 Normative runtime contracts
 
@@ -217,11 +219,14 @@ interface PilotSnapshotV1 {
   transformVersion: string
   compiledAt: ISOInstant
   dataAsOfDate: LocalDate
+  publicationMode: 'fixture' | 'desk-demo' | 'consumer-pilot'
   timeZone: 'Asia/Kuala_Lumpur'
   sources: SourceManifestV1[]
   attribution: {
     text: string
-    datasetUrl: string
+    transactionalRecordsUrl: 'https://data.gov.my/data-catalogue/pricecatcher'
+    premiseLookupUrl: 'https://data.gov.my/data-catalogue/lookup_premise'
+    itemLookupUrl: 'https://data.gov.my/data-catalogue/lookup_item'
     licenseUrl: 'https://creativecommons.org/licenses/by/4.0/'
   }
   premises: PremiseV1[]
@@ -270,7 +275,7 @@ The pointer file is `CurrentSnapshotPointerV1 { schemaVersion: 1; buildId: strin
 
 The compiler materializes the premise × item × two-target-date matrix, so `missing` is explicit rather than inferred from a compact array. `stale` and cross-premise `date-mismatch` are evaluation outcomes because they depend on `evaluatedAt` and the comparison pair.
 
-The public recommendation API is:
+The public recommendation function accepts an `unknown` request, parses a strict known-field shell, and preserves semantic refusal states such as missing/imprecise location and an empty basket before producing this calculation-ready input:
 
 ```ts
 interface RecommendationInput {
@@ -282,11 +287,11 @@ interface RecommendationInput {
   mode: 'walk' | 'drive'
   fuelEfficiencyDeciKmPerL?: number
   fuelPriceSenPerL?: Sen
-  fixedTripCostByPremiseCode: Record<
+  fixedTripCostByPremiseCode?: Record<
     string,
     { status: 'confirmed'; amountSen: Sen } | { status: 'unknown' }
   >
-  worthwhileThresholdSen: Sen
+  worthwhileThresholdSen?: Sen
 }
 
 type RecommendationResult =
@@ -298,20 +303,28 @@ type RecommendationResult =
       reasons: ComparisonOnlyReason[]
       exclusions: ExclusionCounts
     }
-  | { kind: 'insufficient-evidence'; primaryReason: ReasonCode; details: ReasonDetail[] }
+  | {
+      kind: 'insufficient-evidence'
+      primaryReason: ReasonCode
+      details: ReasonDetail[]
+      exclusions?: ExclusionCounts
+    }
 
 type ComparisonOnlyReason =
   | 'selected-items-only'
   | 'walking-route-unverified'
   | 'fixed-trip-cost-unknown'
+  | 'publication-not-consumer-ready'
 
 interface ComparedLineV1 {
   itemCode: string
   officialUnit: string
   quantityHundredths: number
   observedDate: LocalDate
-  unitAllowanceSen: Sen
-  lineAllowanceSen: Sen
+  usualUnitAllowanceSen: Sen
+  candidateUnitAllowanceSen: Sen
+  usualLineAllowanceSen: Sen
+  candidateLineAllowanceSen: Sen
   usual: { priceSen: Sen; lineTotalSen: Sen; conservativeLineSen: Sen }
   candidate: { priceSen: Sen; lineTotalSen: Sen; conservativeLineSen: Sen }
 }
@@ -364,6 +377,7 @@ type CandidateExclusionReason =
 interface ExclusionCounts {
   pilotPremiseCount: number
   inRadiusCandidateCount: number
+  completeCandidateCount: number
   excludedByReason: Partial<Record<CandidateExclusionReason, number>>
 }
 
@@ -375,9 +389,9 @@ interface ReasonDetail {
 }
 ```
 
-Signed saving fields are safe integers but may be negative; all other `Sen` fields are non-negative safe integers. `ComparisonOnlyReason[]` is deduplicated and sorted in the fixed order shown in its union: basket scope, walking route, then fixed-cost knowledge. `ExclusionCounts` groups excluded premises without exposing private audit notes.
+Signed saving fields are safe integers but may be negative; all other `Sen` fields are non-negative safe integers. `ComparisonOnlyReason[]` is deduplicated and sorted in the fixed order shown in its union: basket scope, walking route, fixed-cost knowledge, then publication readiness. `ExclusionCounts` partitions premises without exposing private audit notes. Every non-usual pilot premise appears exactly once: outside radius, complete, or one fixed highest-precedence evidence bucket. Thus outside plus in-radius equals the pilot candidate count, and complete plus in-radius exclusions equals the in-radius count; line-level details never multiply premise counts.
 
-Input validation is fixed: latitude is −90…90, longitude −180…180, reported accuracy must be 0…100 metres for a trip result, quantity hundredths 1…9,900, threshold 0…10,000 sen, fuel efficiency 10…500 deci-km/L, fuel price 1…1,000 sen/L, and each confirmed fixed trip cost 0…10,000 sen. The fixed-cost map must contain the usual premise and every complete in-radius candidate; a missing entry is `input-invalid`, while any `unknown` entry forces `comparison-only`. Items marked `whole-units` require quantity hundredths divisible by 100; manually curated weight/volume definitions may allow hundredths. Duplicate basket item codes merge by checked integer addition and fail when the result exceeds 9,900. Driving defaults fuel efficiency to 120 deci-km/L (12 km/L), but fuel price has no hidden live default and must be explicitly entered or confirmed from dated pilot metadata. Walking ignores fuel fields. The usual premise is always excluded from candidates.
+Input validation is fixed: latitude is −90…90, longitude −180…180, reported accuracy must be 0…100 metres for a trip result, quantity hundredths 1…9,900, threshold 0…10,000 sen, fuel efficiency 10…500 deci-km/L, fuel price 1…1,000 sen/L, and each confirmed fixed trip cost 0…10,000 sen. UI decimal text is parsed without floating-point rounding: quantities and RM accept at most two fractional digits, efficiency at most one, and comma/exponent/sign/excess-decimal/overflow forms fail visibly. Trip-only fields may be absent when basket scope, mode, or publication already guarantees comparison-only. Only an otherwise trip-eligible consumer drive requires the fixed-cost map to contain the usual premise and every complete in-radius candidate; a missing entry is `input-invalid`, while any `unknown` entry forces `comparison-only`. Items marked `whole-units` require quantity hundredths divisible by 100; manually curated weight/volume definitions may allow hundredths. Duplicate basket item codes merge by checked integer addition and fail when the result exceeds 9,900. Driving defaults fuel efficiency to 120 deci-km/L (12 km/L), but fuel price has no hidden live default. Walking ignores fuel fields. The usual premise is always excluded from candidates.
 
 ## 8. Evidence-quality rules
 
@@ -393,7 +407,7 @@ If the snapshot's latest included observation date is older than the immediately
 
 A price must parse to a positive integer number of sen with at most two decimal places. For the Petaling Jaya pilot, the compiler builds a same-item Selangor reference from the 30 complete Malaysia calendar dates immediately preceding the target observation date; the target date never influences its own reference. Each premise contributes one value: the median of that premise's non-conflicting daily observations in the window, rounded half-up to sen. This gives daily and weekly premises equal reference weight. A line is eligible only when at least 20 distinct premises contribute and the price is strictly greater than one quarter and strictly less than four times the cross-premise median. The robust scale is `max(1.4826 × MAD, 20 sen, ceil(2% × median))`; `abs(price - median) / robustScale` above 6 makes the line ineligible. This definition remains finite and continuous when MAD is zero or near zero.
 
-An ineligible low price can never make a premise win. The audit records the value, item, premise, observation date, rejection reason, eligible-line rate, and resulting basket-eligibility rate. Before publishing a pilot artifact, a reviewer inspects every rejected observation whose inclusion would change the winning premise or result state and every otherwise eligible winning line priced below half its reference median.
+An ineligible low price can never make a premise win. The audit records the value, item, premise, observation date, rejection reason, source-row provenance, eligible-line rate, and resulting basket-eligibility rate. Before publication, an audit-only pass emits a canonical review-basis file containing the complete typed evidence object for every rejected pilot target cell and every otherwise eligible target cell priced below half its reference median. Two independent reviewers bind that exact basis digest and must agree on every disposition; changed evidence cannot reuse an older decision. Final compilation reconstructs the full basis and fails on any missing, stale, extra, or non-unanimous disposition.
 
 ### 8.3 Same-definition completeness
 
@@ -412,7 +426,7 @@ The compiler performs these stages in order:
 5. Build each target's equal-premise-weighted distribution from `referenceRows` on the preceding 30 complete local dates, excluding the target date.
 6. Require 20 distinct contributing reference premises, then apply the hard ratio and robust-scale gates to target `pilotRows`.
 7. Emit `insufficient-reference` or `anomalous` explicitly rather than dropping a rejected pilot cell.
-8. Materialize every missing pilot premise × item × target-date cell for exactly the two public target dates, validate the complete public snapshot and private audit under one `buildId`, then atomically publish.
+8. Materialize every missing pilot premise × item × target-date cell for exactly the two public target dates, validate the complete public snapshot/private audit/normalized slice under one derived `buildId`, then leave an inert stage for the separate verified atomic publisher.
 
 Any change to this order increments `transformVersion` and invalidates the golden artifact hash.
 
@@ -434,26 +448,26 @@ For each fully eligible premise:
 
 1. Each line total is `priceSen × quantityHundredths / 100`, rounded half-up to the nearest sen; `basketTotal` is the integer-sen sum of those rounded lines.
 2. Straight-line distance uses the Haversine formula with mean Earth radius 6,371,008.8 metres and is rounded half-up to the nearest metre. Radius boundaries are inclusive: at most 5,000 metres for driving candidates and at most 2,000 metres for walking comparison.
-3. Estimated one-way road metres are explicitly labelled and equal straight-line metres multiplied by a configurable pilot route factor of 1.25, rounded to the nearest metre.
+3. Estimated one-way road metres are explicitly labelled and equal straight-line metres multiplied by a configurable pilot route factor of 1.25, rounded to the nearest metre. Version 1 serializes a safe-integer route factor from 5,000 to 30,000 basis points; this implementation emits 10,000, 12,500, or 15,000, while later field calibration may widen the conservative bounds without changing the wire schema.
 4. Walking has RM0 monetary trip cost. Driving fuel cost uses the round-trip estimated road distance, fuel efficiency, and fuel price, rounded half-up to the nearest sen, plus the premise-specific user-entered toll/parking amount.
 5. `netCost = basketTotal + tripCost`.
 6. `estimatedNetSaving = usualNetCost - candidateNetCost` using the 1.25 route factor.
-7. Each observed unit price gets `unitAllowanceSen = max(20, ceil(2% × priceSen))`. The quantity-scaled allowance is `lineAllowanceSen = ceil(unitAllowanceSen × quantityHundredths / 100)`. Baseline lower line cost is `max(0, lineTotalSen − lineAllowanceSen)`; candidate upper line cost is `lineTotalSen + lineAllowanceSen`.
+7. Each side's observed unit price independently gets `unitAllowanceSen = max(20, ceil(2% × priceSen))`. Its quantity-scaled allowance is `lineAllowanceSen = ceil(unitAllowanceSen × quantityHundredths / 100)`. The four usual/candidate unit/line allowance values are serialized separately. Baseline lower line cost is `max(0, usualLineTotalSen − usualLineAllowanceSen)`; candidate upper line cost is `candidateLineTotalSen + candidateLineAllowanceSen`.
 8. Conservative driving travel uses a 1.0 route factor for the usual shop and 1.5 for each candidate, preserving each confirmed premise-specific fixed cost from the input map. `conservativeNetSaving` subtracts the candidate's upper basket/travel cost from the usual shop's lower basket/travel cost. An unknown fixed cost is never converted to RM0 and prevents a trip recommendation.
 9. Walking has RM0 estimated out-of-pocket cost, but straight-line distance cannot prove route connectivity, crossings, or effort. Walking therefore returns `comparison-only` with `walking-route-unverified`, never `switch` or `no-clear-advantage`, in this phase.
 
-Candidates outside the radius or without full eligible coverage are excluded with visible reason counts. A price-only candidate is the complete candidate with the lowest observed basket total; ties resolve by the most recent oldest-line observation date, shortest distance, then canonical premise code. If basket scope, walking-route evidence, or fixed-cost knowledge requires `comparison-only`, the engine returns that price comparison and does not manufacture trip fields.
+Candidates outside the radius or without full eligible coverage are excluded with visible reason counts. A price-only candidate is the complete candidate with the lowest observed basket total; ties resolve by the most recent oldest-line observation date, shortest distance, then canonical premise code. If basket scope, walking-route evidence, fixed-cost knowledge, or non-consumer publication mode requires `comparison-only`, the engine returns that price comparison and does not manufacture trip fields.
 
-Only a complete driving request with confirmed fixed costs for every complete in-radius candidate proceeds to trip ranking. Among those candidates, the highest conservative net saving wins; ties resolve by the most recent oldest-line observation date, shortest distance, then canonical premise code.
+Only a `consumer-pilot` snapshot and a complete driving request with confirmed fixed costs for every complete in-radius candidate proceed to trip ranking. A fixture or desk-demo snapshot adds `publication-not-consumer-ready` and stops at price comparison. Among consumer-pilot candidates, the highest conservative net saving wins; ties resolve by the most recent oldest-line observation date, shortest distance, then canonical premise code.
 
 The result is:
 
-- `switch` when the best alternative's conservative net saving is at least the user's threshold;
+- `switch` when the best alternative's conservative net saving is positive and at least the user's threshold (so RM0 at an RM0 threshold is still not a switch);
 - `no-clear-advantage` when at least one reliable alternative exists but none clears the threshold conservatively;
-- `comparison-only` when reliable selected-line arithmetic exists but the user reports unmonitored intended purchases, selects walking without a verified route, or leaves any viable premise's fixed trip cost unknown; this state cannot contain trip-level imperative copy;
+- `comparison-only` when reliable selected-line arithmetic exists but the user reports unmonitored intended purchases, selects walking without a verified route, leaves any viable premise's fixed trip cost unknown, or loads a fixture/desk-demo publication; this state cannot contain trip fields or trip-level imperative copy;
 - `insufficient-evidence` when the baseline or every alternative fails the evidence rules.
 
-`switch` and `no-clear-advantage` additionally require `basketScope = complete-trip` and `mode = drive`. The engine never infers completeness merely because every entered line has a price.
+`switch` and `no-clear-advantage` additionally require `publicationMode = consumer-pilot`, every compared premise to be unexpired `field-verified`, `basketScope = complete-trip`, and `mode = drive`. The engine never infers completeness merely because every entered line has a price. This branch may model synthetic consumer-mode snapshots in non-shipped tests, but its compiler/publisher does not authorize or emit a consumer-pilot artifact.
 
 The arithmetic inputs accompany the verdict so the UI can explain every ringgit. The threshold decision uses `conservativeNetSavingSen`, and that same sen value is visible in the expanded result even though the headline is rounded. Estimated distance and fuel cost are labelled as dedicated-round-trip out-of-pocket estimates; the app does not include time/effort or claim route accuracy, live stock, or a guaranteed checkout total.
 
@@ -491,6 +505,7 @@ Failure precedence is deterministic. The engine returns the first applicable cla
 - AUNTIE Saves contains no OpenAI, Exa, geocoder, or routing credential.
 - Any future AI or paid-data integration must run behind a server boundary and receive a separate threat review.
 - Secrets are excluded from fixtures, compiled snapshots, logs, screenshots, tests, commits, and generated bundles.
+- Committed review artifacts use pseudonymous IDs and enumerated reason codes. Runtime schemas and scans reject email addresses, phone/contact fields, local paths, data URLs, embedded media, and unrestricted free-text reviewer notes.
 
 The later field study has a separate privacy contract because it collects more than the application. Participants receive a plain-language consent notice covering location, baskets, receipts/photos, observed behavior, and the study purpose. Study records use random participant IDs; the identity key is stored separately with access limited to the study lead. Receipt images are redacted for names, loyalty IDs, payment details, and unrelated purchases before analysis. Raw and derived records are encrypted at rest and access is logged. Raw location and receipt imagery are retained for no more than 30 days after the study, derived pseudonymous metrics for no more than 90 days, and then deleted. Participants may withdraw and request deletion before aggregation. None of the study data is used for advertising or model training.
 
@@ -524,9 +539,9 @@ The compiler writes to a temporary path, validates the complete artifact, and on
 
 The implementation adds React Testing Library, `user-event`, `jest-dom`, jsdom, Playwright, and `@axe-core/playwright`. Domain and compiler tests run in Vitest's Node environment; component tests opt into jsdom explicitly. Clock, geolocation provider, snapshot loader, fetch, and compiler filesystem/download adapters are injected rather than monkey-patched globally.
 
-Component tests cover basket editing, basket-scope attestation, permission refusal/inaccuracy, assumption editing, all four result states, line-item evidence, attribution, and mobile accessibility. Playwright runs against the production `preview:saves` build with mocked accurate, inaccurate, denied, and missing geolocation. Browser verification covers at least 390×844 and desktop widths, keyboard use, visible focus, no horizontal overflow, readable error states, and axe checks.
+Component tests cover basket editing, basket-scope attestation, permission refusal/inaccuracy, assumption editing, all four result states, publication-mode downgrade, line-item evidence, attribution, and mobile accessibility. Playwright's deterministic journeys run a separate built E2E assembly that shares the production bootstrap/UI but injects a fixed clock from the committed fixture manifest while routing data requests to committed fixture-state bytes. The normal `dist/saves` output is independently scanned to prove that entry, fixture clock, and test controls are absent. A separate unmocked normal-build current-pointer smoke validates its declared mode/banner without assuming particular items or dates. Browser verification covers accurate, inaccurate, denied, and missing geolocation; switch, no-advantage, every comparison-only cause, stale/integrity refusal, expanded evidence; 390×844 and desktop widths; complete keyboard traversal; visible focus; no horizontal overflow; readable error states; and axe checks in form, result, disclosure, and error states.
 
-The E2E harness rejects every request whose origin is not the local preview server. A module-graph test rejects prohibited imports, the CSP is asserted from the built HTML, and `dist/saves` is scanned for prohibited SDK/domain strings and high-entropy credential patterns without printing any matched secret value.
+The E2E harness permits only the exact preview HTML/hashed asset/data paths required by each scenario, rejects all other same-origin or cross-origin requests, and proves that no request after geolocation carries location or basket values in URL, headers, or body. It also proves geolocation is never called before the explicit button. A module-graph test rejects prohibited imports, the CSP is asserted from the built HTML, and `dist/saves` is scanned for prohibited SDK/domain strings and high-entropy credential patterns without printing any matched secret value.
 
 The existing Electron test and build commands must still pass. `verify:saves` runs all Saves-specific gates, then the completion audit separately runs existing `npm test` and `npm run build` as regression evidence. No paid key is required for `dev:saves`, `typecheck:saves`, `build:saves`, `preview:saves`, `verify:saves`, or the Saves experience; this claim does not apply to the preserved Electron app's live AI features.
 
@@ -543,13 +558,13 @@ Software implementation is complete only when:
 5. No ineligible observation contributes to a `switch` or `no-clear-advantage` result. Golden fixtures prove that an ineligible baseline, or the absence of any complete eligible alternative, returns `insufficient-evidence`; one bad candidate may be excluded only when another independently complete candidate remains.
 6. The fixture artifact can be regenerated byte-for-byte from pinned fixture bytes and a fixed clock.
 7. The rendered app visibly shows source date, line dates, assumptions, disclaimer, and CC BY 4.0 attribution.
-8. The staged diff, Saves source/data directories, and `dist/saves` scan find no high-entropy credential values; the production module/domain scan finds no prohibited AI, Electron, analytics, or third-party network dependency. Scanners report paths and rule names but never print suspected secret values.
+8. Every tracked or untracked nonignored repository text file—including docs/config/workflows/private data—plus explicit generated Saves builds/stages scans clean for high-entropy credential values; the production module/domain scan finds no prohibited AI, Electron, analytics, or third-party network dependency. Scanners report paths and rule names but never print suspected secret values.
 9. No paid API key is required for any Saves command or the Saves experience.
 10. `verify:saves`, existing `npm test`, and existing `npm run build` all pass from a clean checkout.
 
 ### 13.2 Desk-demo content gate
 
-A demo using current official data additionally requires the committed feasibility report, literal reviewed `microzones.json` / `premises.json` / `items.json`, 10–15 unexpired desk-verified eligible premises, 5–10 semantically reviewed high-coverage item definitions, a public snapshot/private audit pair under one build ID, and byte-for-byte regeneration from the committed normalized pilot slice. The source lock proves which retained official input bytes produced that slice. Until this gate passes, the UI identifies itself as fixture/demo data and does not imply current nearby recommendations.
+A demo using current official data additionally requires the committed feasibility report, literal reviewed `microzones.json` / `premises.json` / `items.json`, 10–15 unexpired desk-verified eligible premises, 5–10 semantically reviewed high-coverage item definitions, a public snapshot/private audit pair under one build ID, and byte-for-byte regeneration from the committed normalized pilot slice. The source lock proves which retained official input bytes produced that slice. Before this gate passes, the UI identifies itself as synthetic fixture data. After it passes, the UI identifies itself as a current desk-verified demonstration, explicitly says coordinates are not field-verified, and still forces `comparison-only`; it does not imply that a user should make a trip.
 
 ### 13.3 Consumer-pilot content gate
 
