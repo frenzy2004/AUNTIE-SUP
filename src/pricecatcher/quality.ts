@@ -89,6 +89,15 @@ const boundedRawPrice = (value: unknown): string => {
   return value.slice(0, MAX_AUDIT_RAW_PRICE_LENGTH)
 }
 
+const invalidRawPriceValue = (observation: ParsedObservation): string | null => {
+  const candidate = observation as { status?: unknown; rawPriceValue?: unknown }
+  if (candidate.status !== 'invalid-price') return null
+  if (!Object.hasOwn(candidate, 'rawPriceValue') || typeof candidate.rawPriceValue !== 'string') {
+    throw new RangeError('invalid-price observation must include a raw price string')
+  }
+  return candidate.rawPriceValue
+}
+
 const distinctSortedNumbers = (values: readonly number[]): number[] => [...new Set(values)].sort(compareNumbers)
 
 const distinctSortedText = (values: readonly string[]): string[] => [...new Set(values)].sort(compareText)
@@ -154,14 +163,15 @@ export function collapseObservationRows(rows: readonly ParsedObservation[]): {
     }
     group.rowCount += 1
 
-    if ('status' in observation) {
-      const rawPriceValue = boundedRawPrice(observation.rawPriceValue)
-      group.rawPriceValues.push(rawPriceValue)
-      group.distinctObservations.add(`invalid:${rawPriceValue}`)
+    const fullRawPriceValue = invalidRawPriceValue(observation)
+    if (fullRawPriceValue !== null) {
+      group.rawPriceValues.push(boundedRawPrice(fullRawPriceValue))
+      group.distinctObservations.add(`invalid:${fullRawPriceValue}`)
     } else {
-      assertNonnegativeSafeInteger(observation.priceSen, 'priceSen must be a non-negative safe integer')
-      group.pricesSen.push(observation.priceSen)
-      group.distinctObservations.add(`value:${observation.priceSen}`)
+      const normalizedObservation = observation as NormalizedObservation
+      assertNonnegativeSafeInteger(normalizedObservation.priceSen, 'priceSen must be a non-negative safe integer')
+      group.pricesSen.push(normalizedObservation.priceSen)
+      group.distinctObservations.add(`value:${normalizedObservation.priceSen}`)
     }
     groups.set(key, group)
   }
