@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { CanonicalCodeSchema, LocalDateSchema, SenSchema, Sha256Schema } from './common'
+import { compareCanonicalCodes } from '../ids'
 import { PRICECATCHER_TRANSFORM_VERSION } from '../version'
 
 const BasisPointsSchema = SenSchema.max(10_000)
@@ -19,7 +20,7 @@ const addDays = (value: string, offset: number): string => {
   return `${date.getUTCFullYear().toString().padStart(4, '0')}-${(date.getUTCMonth() + 1).toString().padStart(2, '0')}-${date.getUTCDate().toString().padStart(2, '0')}`
 }
 const exactDates = (date: string, count: number): string[] => Array.from({ length: count }, (_, index) => addDays(date, index - count + 1))
-const orderedUnique = (values: string[]): boolean => values.every((value, index) => index === 0 || values[index - 1] < value)
+const orderedUnique = (values: string[]): boolean => values.every((value, index) => index === 0 || compareCanonicalCodes(values[index - 1], value) < 0)
 const issuesForDateSet = (values: string[], expected: string[], context: z.RefinementCtx, path: PropertyKey[]) => {
   if (values.length !== expected.length || values.some((value, index) => value !== expected[index])) context.addIssue({ code: z.ZodIssueCode.custom, path, message: 'date range does not match its bound data date' })
 }
@@ -122,7 +123,7 @@ export const validateDistanceFeasibilityReport = (
   const premiseCodes = selected.premises.map(row => row.premiseCode)
   const itemCodes = selected.items.map(row => row.itemCode)
   if (distance.finalPremiseCodes.join('|') !== premiseCodes.join('|') || distance.finalItemCodes.join('|') !== itemCodes.join('|')) throw new Error('distance final codes must exactly match selected coverage rows')
-  const assigned = distance.microzones.flatMap(zone => zone.baselines.map(baseline => baseline.premiseCode)).sort()
+  const assigned = distance.microzones.flatMap(zone => zone.baselines.map(baseline => baseline.premiseCode)).sort(compareCanonicalCodes)
   if (assigned.join('|') !== premiseCodes.join('|')) throw new Error('microzone assignments must partition selected premises')
   const expectedReasons = [
     ...(selected.passesCoverageCandidateGate ? [] : ['selected-coverage-gate-failed']),

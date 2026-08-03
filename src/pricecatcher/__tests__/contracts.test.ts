@@ -231,6 +231,16 @@ describe('runtime contracts', () => {
     expect(DistanceFeasibilityReportV1Schema.parse(sparse).passesDeskDemoGate).toBe(false)
   })
 
+  it('orders all premise-code report comparisons numerically', () => {
+    // Break caught: a valid canonical code sequence containing 10 is rejected because code comparison is lexical.
+    const selected = coverage()
+    selected.premises[9].premiseCode = '10'
+    const report = distance()
+    report.finalPremiseCodes[9] = '10'
+    report.microzones[0].baselines[9].premiseCode = '10'
+    expect(validateDistanceFeasibilityReport(report, selected).passesDeskDemoGate).toBe(true)
+  })
+
   it('enforces strict snapshot/result objects and safe integer/cross-field boundaries', () => {
     // Break caught: serialized contracts admit extra fields, an unknown evidence key, unsafe money, or candidate-stage result without exclusions.
     expect(() => PilotSnapshotV1Schema.parse({ ...snapshot, extra: true })).toThrow()
