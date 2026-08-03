@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { evaluateEvidence, mergeBasketLines, normalizeRecommendationRequest, preflightBasketDiscovery, preflightEvidence, preflightUsualAndGeometry } from '../evidence'
+import { RecommendationResultSchema } from '../contracts/recommendation'
 import {
   inputWithOldClock, makeSnapshot, snapshotWithBadBaselineAndNoCandidate, snapshotWithCandidateObservations,
   snapshotWithMixedCandidateFailures, snapshotWithOldData, snapshotWithOnlyFarCandidates, snapshotWithPairDates,
@@ -170,5 +171,103 @@ describe('evidence evaluation', () => {
     const operation = () => mergeBasketLines(makeSnapshot(), lines as never)
     if (accepted) expect(operation()).toEqual([{ itemCode: '10', quantityHundredths: 9900 }])
     else expect(operation).toThrow(RangeError)
+  })
+
+  // Break caught: transient direct preflight input either throws or treats an invalid basket as complete.
+  it.each([
+    ['stale snapshot', snapshotWithOldData(), validInput()],
+    ['empty basket', makeSnapshot(), { ...validInput(), lines: [] }],
+    ['unknown usual premise', makeSnapshot(), { ...validInput(), usualPremiseCode: '99' }],
+    ['unknown item', makeSnapshot(), { ...validInput(), lines: [{ itemCode: '99', quantityHundredths: 100 }] }]
+  ])('fails closed without throwing for discovery preflight with %s', (_name, snapshot, input) => {
+    const { mode: _mode, ...discoveryInput } = input
+    expect(() => preflightBasketDiscovery(snapshot, discoveryInput as never)).not.toThrow()
+    expect(preflightBasketDiscovery(snapshot, discoveryInput as never)).toMatchObject({ baselineReady: false, completeCandidatePremiseCodes: [], excludedByReason: {} })
+  })
+
+  it('fails closed without throwing for mode-aware preflight with an invalid explicit mode', () => {
+    const input = { ...validInput(), mode: 'fly' }
+    expect(() => preflightEvidence(makeSnapshot(), input as never)).not.toThrow()
+    expect(preflightEvidence(makeSnapshot(), input as never)).toMatchObject({ baselineReady: false, completeCandidatePremiseCodes: [], excludedByReason: {} })
+  })
+
+  it('labels basket discovery precisely without attributing that label to a mode-aware preflight', () => {
+    const { mode: _mode, ...discoveryInput } = validInput()
+    expect(preflightBasketDiscovery(makeSnapshot(), discoveryInput)).toMatchObject({
+      label: 'complete for these items within 5 km discovery—choose a travel mode to apply its radius'
+    })
+    expect(preflightEvidence(makeSnapshot(), validInput())).not.toHaveProperty('label')
+  })
+
+  it('serializes candidate exclusion buckets identically after premise/evidence permutation', () => {
+    const snapshot = snapshotWithThreePremisesAndOneBadCandidate()
+    const original = evaluateEvidence(snapshot, validInput())
+    const reversed = evaluateEvidence({ ...snapshot, premises: [...snapshot.premises].reverse(), evidence: [...snapshot.evidence].reverse() }, validInput())
+    if (original.kind !== 'ready' || reversed.kind !== 'ready') throw new Error('fixture must have an independent complete candidate')
+    expect(JSON.stringify(reversed.exclusions.excludedByReason)).toBe(JSON.stringify(original.exclusions.excludedByReason))
+  })
+
+  it('retains every sorted failure detail while one no-complete premise occupies only its highest bucket', () => {
+    const base = makeSnapshot()
+    const item = (code: string) => ({ code, officialName: `Item ${code}`, officialUnit: 'each', qualifiers: [], quantityMode: 'whole-units' as const })
+    const bad = (itemCode: string, observations: any[]) => ({ premiseCode: '2', itemCode, officialUnit: 'each', observations })
+    const snapshot = { ...base, items: ['10', '11', '12'].map(item), evidence: [
+      ...['10', '11', '12'].map(code => eligibleCell('1', code, '2026-08-02', 600)),
+      bad('10', [{ status: 'eligible', observedDate: '2026-08-01', priceSen: 500 }, { status: 'anomalous', observedDate: '2026-08-02', reason: 'outside-ratio-bound' }]),
+      bad('11', [{ status: 'eligible', observedDate: '2026-08-01', priceSen: 500 }, { status: 'insufficient-reference', observedDate: '2026-08-02' }]),
+      bad('12', [{ status: 'missing', observedDate: '2026-08-01' }, { status: 'missing', observedDate: '2026-08-02' }])
+    ] }
+    const result = evaluateEvidence(snapshot, validInput({ lines: ['10', '11', '12'].map(itemCode => ({ itemCode, quantityHundredths: 100 })) }))
+    expect(result).toMatchObject({ kind: 'insufficient-evidence', primaryReason: 'candidate-anomalous', exclusions: { excludedByReason: { anomalous: 1 }, completeCandidateCount: 0 } })
+    if (result.kind === 'insufficient-evidence') expect(result.details).toEqual([
+      { reason: 'candidate-anomalous', premiseCode: '2', itemCode: '10', observedDate: '2026-08-02' },
+      { reason: 'candidate-insufficient-reference', premiseCode: '2', itemCode: '11', observedDate: '2026-08-02' },
+      { reason: 'candidate-missing', premiseCode: '2', itemCode: '12', observedDate: '2026-08-02' }
+    ])
+  })
+
+  it('emits result-schema-valid early and candidate-stage refusals with the correct exclusions boundary', () => {
+    const early = evaluateEvidence(makeSnapshot(), inputWithOldClock())
+    const candidate = evaluateEvidence(snapshotWithOnlyFarCandidates(), validInput())
+    expect(RecommendationResultSchema.parse(early)).toEqual(early)
+    expect(RecommendationResultSchema.parse(candidate)).toEqual(candidate)
+  })
+
+  it.each([
+    ['unknown item', { lines: [{ itemCode: '99', quantityHundredths: 100 }] }, 'item-not-in-pilot'],
+    ['unknown usual premise', { usualPremiseCode: '99' }, 'usual-premise-not-in-pilot']
+  ] as const)('reaches public membership refusal %s before arithmetic', (_name, patch, primaryReason) => {
+    expect(evaluateEvidence(makeSnapshot(), { ...validInput(), ...patch })).toMatchObject({ kind: 'insufficient-evidence', primaryReason })
+  })
+
+  it.each([
+    ['baseline-missing', () => makeSnapshot({ evidence: [{ premiseCode: '1', itemCode: '10', officialUnit: 'each', observations: [{ status: 'missing', observedDate: '2026-08-01' }, { status: 'missing', observedDate: '2026-08-02' }] }, makeSnapshot().evidence[1]!] })],
+    ['baseline-insufficient-reference', () => makeSnapshot({ evidence: [{ premiseCode: '1', itemCode: '10', officialUnit: 'each', observations: [{ status: 'eligible', observedDate: '2026-08-01', priceSen: 600 }, { status: 'insufficient-reference', observedDate: '2026-08-02' }] }, makeSnapshot().evidence[1]!] })],
+    ['baseline-stale', () => makeSnapshot({ evidence: [{ premiseCode: '1', itemCode: '10', officialUnit: 'each', observations: [{ status: 'eligible', observedDate: '2026-07-31', priceSen: 600 }, { status: 'missing', observedDate: '2026-08-02' }] }, makeSnapshot().evidence[1]!] })],
+    ['candidate-missing', () => snapshotWithCandidateObservations([{ status: 'missing', observedDate: '2026-08-01' }, { status: 'missing', observedDate: '2026-08-02' }])],
+    ['candidate-insufficient-reference', () => snapshotWithCandidateObservations([{ status: 'eligible', observedDate: '2026-08-01', priceSen: 500 }, { status: 'insufficient-reference', observedDate: '2026-08-02' }])],
+    ['candidate-stale', () => snapshotWithCandidateObservations([{ status: 'eligible', observedDate: '2026-07-31', priceSen: 500 }, { status: 'missing', observedDate: '2026-08-02' }])]
+  ] as const)('reaches the realizable public evidence refusal %s', (primaryReason, buildSnapshot) => {
+    const result = evaluateEvidence(buildSnapshot(), validInput())
+    expect(result).toMatchObject({ kind: 'insufficient-evidence', primaryReason })
+    if (primaryReason.startsWith('candidate-')) expect(RecommendationResultSchema.parse(result)).toEqual(result)
+    else expect(result).not.toHaveProperty('exclusions')
+  })
+
+  it('applies the active verification interval to consumer-readiness as well as geometry', () => {
+    const snapshot = makeSnapshot({ premises: makeSnapshot().premises.map(premise => premise.code === '2' ? { ...premise, verifiedOn: '2026-08-04' } : premise) })
+    expect(evaluateEvidence(snapshot, validInput())).toMatchObject({ kind: 'ready', comparisonOnlyReasons: ['publication-not-consumer-ready'] })
+  })
+
+  it('uses inclusive and outside walk, drive, and discovery boundaries', () => {
+    const atDistance = (metres: number) => makeSnapshot({ premises: makeSnapshot().premises.map(premise => ({ ...premise, latitude: 0, longitude: premise.code === '1' ? 101 : 101 + metres / 6_371_008.8 * 180 / Math.PI })) })
+    const location = { latitude: 0, longitude: 101, accuracyMetres: 10 }
+    const { mode: _mode, ...discoveryInput } = validInput({ location })
+    expect(preflightEvidence(atDistance(2000), validInput({ location, mode: 'walk' })).completeCandidatePremiseCodes).toEqual(['2'])
+    expect(preflightEvidence(atDistance(2001), validInput({ location, mode: 'walk' })).completeCandidatePremiseCodes).toEqual([])
+    expect(preflightEvidence(atDistance(5000), validInput({ location, mode: 'drive' })).completeCandidatePremiseCodes).toEqual(['2'])
+    expect(preflightEvidence(atDistance(5001), validInput({ location, mode: 'drive' })).completeCandidatePremiseCodes).toEqual([])
+    expect(preflightBasketDiscovery(atDistance(5000), discoveryInput).completeCandidatePremiseCodes).toEqual(['2'])
+    expect(preflightBasketDiscovery(atDistance(5001), discoveryInput).completeCandidatePremiseCodes).toEqual([])
   })
 })

@@ -10,6 +10,7 @@ import {
 import type { EvidenceCellV1, ObservationEvidenceV1, PilotSnapshotV1 } from './contracts/snapshot'
 
 const FAILURE_ORDER = ['anomalous', 'insufficient-reference', 'stale', 'missing', 'date-mismatch'] as const
+const EXCLUSION_ORDER = ['outside-radius', ...FAILURE_ORDER] as const
 type FailureBucket = typeof FAILURE_ORDER[number]
 type ComparisonOnlyReason = 'selected-items-only' | 'walking-route-unverified' | 'fixed-trip-cost-unknown' | 'publication-not-consumer-ready'
 
@@ -33,6 +34,10 @@ export interface PreflightEvidence {
   baselineReady: boolean
   completeCandidatePremiseCodes: string[]
   excludedByReason: ExclusionCounts['excludedByReason']
+}
+
+export interface BasketDiscoveryPreflight extends PreflightEvidence {
+  label: 'complete for these items within 5 km discovery—choose a travel mode to apply its radius'
 }
 
 export interface UsualAndGeometryPreflight {
@@ -72,6 +77,8 @@ const selectedObservation = (cell: EvidenceCellV1): SelectedObservation => {
   const rows = [...cell.observations].sort((left, right) => right.observedDate.localeCompare(left.observedDate))
   return rows.find(row => row.status !== 'missing') ?? rows[0]!
 }
+
+const emptyPreflight = (): PreflightEvidence => ({ baselineReady: false, completeCandidatePremiseCodes: [], excludedByReason: {} })
 
 const withinFreshTargetDates = (date: LocalDate, evaluatedDate: LocalDate): boolean => date === evaluatedDate || date === addLocalDates(evaluatedDate, -1)
 
@@ -119,7 +126,7 @@ export function mergeBasketLines(snapshot: PilotSnapshotV1, lines: readonly Reco
 
 const cellFor = (snapshot: PilotSnapshotV1, premiseCode: string, itemCode: string): EvidenceCellV1 => snapshot.evidence.find(cell => cell.premiseCode === premiseCode && cell.itemCode === itemCode)!
 
-const baselineFor = (snapshot: PilotSnapshotV1, input: EvidencePreflightInput, evaluatedDate: LocalDate): { complete?: CompletePremiseEvidence; details: ReasonDetail[] } => {
+const baselineFor = (snapshot: PilotSnapshotV1, input: BasketDiscoveryInput, evaluatedDate: LocalDate): { complete?: CompletePremiseEvidence; details: ReasonDetail[] } => {
   const premise = snapshot.premises.find(candidate => candidate.code === input.usualPremiseCode)!
   const details: ReasonDetail[] = []
   const lines: CompletePremiseEvidence['lines'] = []
@@ -135,7 +142,7 @@ const baselineFor = (snapshot: PilotSnapshotV1, input: EvidencePreflightInput, e
   return details.length > 0 ? { details: sortDetails(details) } : { complete: { premiseCode: premise.code, straightLineMetres: haversineMetres(input.location, premise), lines: lines.sort((left, right) => compareCanonicalCodes(left.itemCode, right.itemCode)) }, details: [] }
 }
 
-const assessCandidate = (snapshot: PilotSnapshotV1, usual: CompletePremiseEvidence, premiseCode: string, input: EvidencePreflightInput, evaluatedDate: LocalDate): CandidateAssessment => {
+const assessCandidate = (snapshot: PilotSnapshotV1, usual: CompletePremiseEvidence, premiseCode: string, input: BasketDiscoveryInput, evaluatedDate: LocalDate): CandidateAssessment => {
   const premise = snapshot.premises.find(candidate => candidate.code === premiseCode)!
   const details: ReasonDetail[] = []
   const lines: CompletePremiseEvidence['lines'] = []
@@ -162,7 +169,7 @@ const assessCandidate = (snapshot: PilotSnapshotV1, usual: CompletePremiseEviden
   return { complete: { premiseCode, straightLineMetres: haversineMetres(input.location, premise), lines: lines.sort((left, right) => compareCanonicalCodes(left.itemCode, right.itemCode)) }, details: [] }
 }
 
-const enumerateCandidates = (snapshot: PilotSnapshotV1, input: EvidencePreflightInput, evaluatedDate: LocalDate, radius: number): { usual?: CompletePremiseEvidence; baselineDetails: ReasonDetail[]; candidates: CompletePremiseEvidence[]; details: ReasonDetail[]; exclusions?: ExclusionCounts } => {
+const enumerateCandidates = (snapshot: PilotSnapshotV1, input: BasketDiscoveryInput, evaluatedDate: LocalDate, radius: number): { usual?: CompletePremiseEvidence; baselineDetails: ReasonDetail[]; candidates: CompletePremiseEvidence[]; details: ReasonDetail[]; exclusions?: ExclusionCounts } => {
   const baseline = baselineFor(snapshot, input, evaluatedDate)
   if (!baseline.complete) return { baselineDetails: baseline.details, candidates: [], details: [] }
   const excludedByReason: ExclusionCounts['excludedByReason'] = {}
@@ -180,24 +187,61 @@ const enumerateCandidates = (snapshot: PilotSnapshotV1, input: EvidencePreflight
     if (assessment.complete) candidates.push(assessment.complete)
     else if (assessment.bucket) excludedByReason[assessment.bucket] = (excludedByReason[assessment.bucket] ?? 0) + 1
   }
+  const orderedExcludedByReason: ExclusionCounts['excludedByReason'] = {}
+  for (const reason of EXCLUSION_ORDER) {
+    const count = excludedByReason[reason]
+    if (count !== undefined) orderedExcludedByReason[reason] = count
+  }
   return {
     usual: baseline.complete, baselineDetails: [], candidates: candidates.sort((left, right) => compareCanonicalCodes(left.premiseCode, right.premiseCode)), details: sortDetails(details),
-    exclusions: { pilotPremiseCount: snapshot.premises.length - 1, inRadiusCandidateCount, completeCandidateCount: candidates.length, excludedByReason }
+    exclusions: { pilotPremiseCount: snapshot.premises.length - 1, inRadiusCandidateCount, completeCandidateCount: candidates.length, excludedByReason: orderedExcludedByReason }
   }
 }
 
-const preflightInput = (snapshot: PilotSnapshotV1, input: EvidencePreflightInput, radius: number): PreflightEvidence => {
+const preflightInput = (snapshot: PilotSnapshotV1, input: BasketDiscoveryInput, radius: number): PreflightEvidence => {
   const date = malaysiaDateAt(input.evaluatedAt)
   const enumerated = enumerateCandidates(snapshot, input, date, radius)
   return { baselineReady: enumerated.usual !== undefined, completeCandidatePremiseCodes: enumerated.candidates.map(candidate => candidate.premiseCode), excludedByReason: enumerated.exclusions?.excludedByReason ?? {} }
 }
 
-export function preflightEvidence(snapshot: PilotSnapshotV1, input: EvidencePreflightInput): PreflightEvidence {
-  return preflightInput(snapshot, input, input.mode === 'walk' ? 2000 : 5000)
+const normalizePreflightInput = (snapshot: PilotSnapshotV1, value: unknown, requireMode: boolean): { input: BasketDiscoveryInput; mode?: RecommendationInput['mode']; evaluatedDate: LocalDate } | null => {
+  if (!isRecord(value) || !ISOInstantSchema.safeParse(value.evaluatedAt).success || !isRecord(value.location)) return null
+  const evaluatedAt = value.evaluatedAt as ISOInstant
+  const evaluatedDate = malaysiaDateAt(evaluatedAt)
+  if (new Date(evaluatedAt).getTime() < new Date(snapshot.compiledAt).getTime() - 300_000 || evaluatedDate < snapshot.dataAsOfDate ||
+      (snapshot.dataAsOfDate !== evaluatedDate && snapshot.dataAsOfDate !== addLocalDates(evaluatedDate, -1))) return null
+  const { latitude, longitude, accuracyMetres } = value.location
+  if (![latitude, longitude, accuracyMetres].every(item => typeof item === 'number' && Number.isFinite(item)) ||
+      (latitude as number) < -90 || (latitude as number) > 90 || (longitude as number) < -180 || (longitude as number) > 180 ||
+      (accuracyMetres as number) < 0 || (accuracyMetres as number) > 100) return null
+  const usualPremiseCode = canonicalizeCode(value.usualPremiseCode)
+  if (usualPremiseCode === null || !snapshot.premises.some(premise => premise.code === usualPremiseCode) || !Array.isArray(value.lines) || value.lines.length === 0) return null
+  if (requireMode && value.mode !== 'walk' && value.mode !== 'drive') return null
+  const rawLines: Array<{ itemCode: string; quantityHundredths: number }> = []
+  for (const rawLine of value.lines) {
+    if (!isRecord(rawLine)) return null
+    const itemCode = canonicalizeCode(rawLine.itemCode)
+    if (itemCode === null || typeof rawLine.quantityHundredths !== 'number' || !Number.isSafeInteger(rawLine.quantityHundredths) || rawLine.quantityHundredths < 1 || !snapshot.items.some(item => item.code === itemCode)) return null
+    rawLines.push({ itemCode, quantityHundredths: rawLine.quantityHundredths })
+  }
+  try {
+    const lines = mergeBasketLines(snapshot, rawLines)
+    return { input: { evaluatedAt, location: { latitude: latitude as number, longitude: longitude as number, accuracyMetres: accuracyMetres as number }, usualPremiseCode, lines },
+      ...(requireMode ? { mode: value.mode as RecommendationInput['mode'] } : {}), evaluatedDate }
+  } catch { return null }
 }
 
-export function preflightBasketDiscovery(snapshot: PilotSnapshotV1, input: BasketDiscoveryInput): PreflightEvidence {
-  return preflightInput(snapshot, input as EvidencePreflightInput, 5000)
+export function preflightEvidence(snapshot: PilotSnapshotV1, input: EvidencePreflightInput): PreflightEvidence {
+  const normalized = normalizePreflightInput(snapshot, input, true)
+  return normalized ? preflightInput(snapshot, normalized.input, normalized.mode === 'walk' ? 2000 : 5000) : emptyPreflight()
+}
+
+export function preflightBasketDiscovery(snapshot: PilotSnapshotV1, input: BasketDiscoveryInput): BasketDiscoveryPreflight {
+  const normalized = normalizePreflightInput(snapshot, input, false)
+  return {
+    ...(normalized ? preflightInput(snapshot, normalized.input, 5000) : emptyPreflight()),
+    label: 'complete for these items within 5 km discovery—choose a travel mode to apply its radius'
+  }
 }
 
 export function preflightUsualAndGeometry(snapshot: PilotSnapshotV1, input: Pick<EvidencePreflightInput, 'evaluatedAt' | 'location' | 'usualPremiseCode'>): UsualAndGeometryPreflight {
@@ -217,7 +261,7 @@ export function preflightUsualAndGeometry(snapshot: PilotSnapshotV1, input: Pick
     const observation = selectedObservation(cell)
     return observation.status === 'eligible' && withinFreshTargetDates(observation.observedDate, snapshot.dataAsOfDate)
   })
-  const coordinateViablePremiseCount = snapshot.premises.filter(candidate => candidate.code !== premise.code && candidate.verificationStatus === 'field-verified' && candidate.verificationExpiresOn >= evaluatedDate && haversineMetres(input.location, candidate) <= 5000).length
+  const coordinateViablePremiseCount = snapshot.premises.filter(candidate => candidate.code !== premise.code && candidate.verificationStatus === 'field-verified' && candidate.verifiedOn <= evaluatedDate && candidate.verificationExpiresOn >= evaluatedDate && haversineMetres(input.location, candidate) <= 5000).length
   return { usualPremiseReady: true, usualHasRecentPilotData, coordinateViablePremiseCount, label: 'within 5 km' }
 }
 
@@ -233,7 +277,7 @@ const comparisonOnlyReasons = (snapshot: PilotSnapshotV1, input: RecommendationI
   if (input.mode === 'walk') reasons.push('walking-route-unverified')
   if (snapshot.publicationMode !== 'consumer-pilot' || compared.some(({ premiseCode }) => {
     const premise = snapshot.premises.find(candidate => candidate.code === premiseCode)!
-    return premise.verificationStatus !== 'field-verified' || premise.verificationExpiresOn < evaluatedDate
+    return premise.verificationStatus !== 'field-verified' || premise.verifiedOn > evaluatedDate || premise.verificationExpiresOn < evaluatedDate
   })) reasons.push('publication-not-consumer-ready')
   if (reasons.length === 0) {
     const required = compared.map(candidate => candidate.premiseCode)
