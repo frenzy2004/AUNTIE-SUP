@@ -1,31 +1,25 @@
-name: Saves Node 20
-
-on:
-  push:
-    branches: [UPGRADES]
-  pull_request:
-    paths:
-      - 'package.json'
-      - 'package-lock.json'
-      - 'src/saves/**'
-      - 'src/pricecatcher/**'
-      - 'scripts/pricecatcher/**'
-      - 'tsconfig.saves.json'
-      - 'tsconfig.pricecatcher.json'
-      - 'tsconfig.pricecatcher-node.json'
-      - 'tsconfig.saves-e2e.json'
-      - 'vitest.config.ts'
-      - 'vitest.saves.config.ts'
-      - '.github/workflows/saves-node20.yml'
-
-jobs:
-  saves-node20:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-      - run: npm ci
-      - run: npm run typecheck:saves
-      - run: npm run test:saves -- src/pricecatcher/__tests__/contracts.test.ts scripts/pricecatcher/saves-node20-workflow.test.ts
+{
+  "name": "Saves Node 20",
+  "on": {
+    "push": { "branches": ["UPGRADES"] },
+    "pull_request": {
+      "paths": [
+        "package.json", "package-lock.json", "src/saves/**", "src/pricecatcher/**", "scripts/pricecatcher/**",
+        "tsconfig.saves.json", "tsconfig.pricecatcher.json", "tsconfig.pricecatcher-node.json", "tsconfig.saves-e2e.json",
+        "vitest.config.ts", "vitest.saves.config.ts", ".github/workflows/saves-node20.yml"
+      ]
+    }
+  },
+  "jobs": {
+    "saves-node20": {
+      "runs-on": "ubuntu-latest",
+      "steps": [
+        { "uses": "actions/checkout@v4" },
+        { "uses": "actions/setup-node@v4", "with": { "node-version": "20" } },
+        { "run": "npm ci" },
+        { "run": "npm run typecheck:saves" },
+        { "run": "npm run test:saves -- src/pricecatcher/__tests__/contracts.test.ts scripts/pricecatcher/saves-node20-workflow.test.ts" }
+      ]
+    }
+  }
+}
