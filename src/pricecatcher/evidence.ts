@@ -11,6 +11,7 @@ import type { EvidenceCellV1, ObservationEvidenceV1, PilotSnapshotV1 } from './c
 
 const FAILURE_ORDER = ['anomalous', 'insufficient-reference', 'stale', 'missing', 'date-mismatch'] as const
 const EXCLUSION_ORDER = ['outside-radius', ...FAILURE_ORDER] as const
+const MAX_MERGED_QUANTITY_HUNDREDTHS = 9_900
 type FailureBucket = typeof FAILURE_ORDER[number]
 type ComparisonOnlyReason = 'selected-items-only' | 'walking-route-unverified' | 'fixed-trip-cost-unknown' | 'publication-not-consumer-ready'
 
@@ -56,18 +57,14 @@ type CandidateAssessment = { complete?: CompletePremiseEvidence; bucket?: Failur
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value)
 const hasOwn = (value: object, key: string): boolean => Object.prototype.hasOwnProperty.call(value, key)
-const hasExactKeys = (value: Record<string, unknown>, keys: readonly string[]): boolean => {
-  const actual = Object.keys(value)
-  return actual.length === keys.length && keys.every(key => hasOwn(value, key))
-}
 const readExactPlainData = (value: unknown, keys: readonly string[]): Record<string, unknown> | null => {
   try {
     if (typeof value !== 'object' || value === null || Array.isArray(value)) return null
     const prototype = Object.getPrototypeOf(value)
     if (prototype !== Object.prototype) return null
-    const ownKeys = Reflect.ownKeys(value)
-    if (ownKeys.length !== keys.length || ownKeys.some(key => typeof key !== 'string') || !keys.every(key => ownKeys.includes(key))) return null
     const descriptors: Record<string, PropertyDescriptor> = Object.getOwnPropertyDescriptors(value)
+    const descriptorKeys = Reflect.ownKeys(descriptors)
+    if (descriptorKeys.length !== keys.length || descriptorKeys.some(key => typeof key !== 'string') || !keys.every(key => hasOwn(descriptors, key))) return null
     const copy: Record<string, unknown> = {}
     for (const key of keys) {
       const descriptor = descriptors[key]
@@ -77,20 +74,24 @@ const readExactPlainData = (value: unknown, keys: readonly string[]): Record<str
     return copy
   } catch { return null }
 }
-const readDensePlainArray = (value: unknown): unknown[] | null => {
+const maximumSatisfiableRawLineCount = (itemCount: number): number =>
+  itemCount > Math.floor(Number.MAX_SAFE_INTEGER / MAX_MERGED_QUANTITY_HUNDREDTHS)
+    ? Number.MAX_SAFE_INTEGER
+    : itemCount * MAX_MERGED_QUANTITY_HUNDREDTHS
+const readDensePlainArray = (value: unknown, maximumLength: number): unknown[] | null => {
   try {
     if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) return null
-    const ownKeys = Reflect.ownKeys(value)
     const lengthDescriptor = Object.getOwnPropertyDescriptor(value, 'length')
     if (!lengthDescriptor || lengthDescriptor.enumerable || !hasOwn(lengthDescriptor, 'value') || !Number.isSafeInteger(lengthDescriptor.value) || lengthDescriptor.value < 0) return null
-    if (ownKeys.length !== lengthDescriptor.value + 1 || ownKeys.some(key => typeof key !== 'string')) return null
-    const keys = new Set(ownKeys)
-    if (!keys.has('length')) return null
+    if (lengthDescriptor.value > maximumLength) return null
+    const descriptors: Record<string, PropertyDescriptor> = Object.getOwnPropertyDescriptors(value)
+    const descriptorKeys = Reflect.ownKeys(descriptors)
+    if (descriptorKeys.length !== lengthDescriptor.value + 1 || descriptorKeys.some(key => typeof key !== 'string')) return null
+    const snapshotLength = descriptors.length
+    if (!snapshotLength || snapshotLength.enumerable || !hasOwn(snapshotLength, 'value') || snapshotLength.value !== lengthDescriptor.value) return null
     const copy: unknown[] = []
     for (let index = 0; index < lengthDescriptor.value; index++) {
-      const key = String(index)
-      if (!keys.has(key)) return null
-      const descriptor = Object.getOwnPropertyDescriptor(value, key)
+      const descriptor = descriptors[String(index)]
       if (!descriptor || !descriptor.enumerable || !hasOwn(descriptor, 'value')) return null
       copy.push(descriptor.value)
     }
@@ -164,7 +165,7 @@ export function mergeBasketLines(snapshot: PilotSnapshotV1, lines: readonly Reco
   }
   return [...quantities.entries()].sort(([left], [right]) => compareCanonicalCodes(left, right)).map(([itemCode, quantityHundredths]) => {
     const item = snapshot.items.find(candidate => candidate.code === itemCode)!
-    if (quantityHundredths > 9900 || (item.quantityMode === 'whole-units' && quantityHundredths % 100 !== 0)) throw new RangeError('invalid basket quantity')
+    if (quantityHundredths > MAX_MERGED_QUANTITY_HUNDREDTHS || (item.quantityMode === 'whole-units' && quantityHundredths % 100 !== 0)) throw new RangeError('invalid basket quantity')
     return { itemCode, quantityHundredths }
   })
 }
@@ -265,7 +266,7 @@ const normalizePreflightInput = (snapshot: PilotSnapshotV1, value: unknown, requ
         (latitude as number) < -90 || (latitude as number) > 90 || (longitude as number) < -180 || (longitude as number) > 180 ||
         (accuracyMetres as number) < 0 || (accuracyMetres as number) > 100) return null
     const usualPremiseCode = parseCanonicalPreflightCode(data.usualPremiseCode)
-    const basketLines = readDensePlainArray(data.lines)
+    const basketLines = readDensePlainArray(data.lines, maximumSatisfiableRawLineCount(snapshot.items.length))
     if (usualPremiseCode === null || !snapshot.premises.some(premise => premise.code === usualPremiseCode) || !basketLines || basketLines.length === 0) return null
     if (requireMode && data.mode !== 'walk' && data.mode !== 'drive') return null
     const rawLines: Array<{ itemCode: string; quantityHundredths: number }> = []

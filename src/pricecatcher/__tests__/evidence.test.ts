@@ -380,6 +380,68 @@ describe('evidence evaluation', () => {
     expect(calls).toBe(0)
   })
 
+  // Break caught: exact top-level keys are checked in one reflection pass but values are copied from a later, expanded pass.
+  it('decodes a top-level record from exactly one bulk descriptor snapshot', () => {
+    let ownKeysCalls = 0
+    let getCalls = 0
+    const input = new Proxy(usualPreflightInput(), {
+      ownKeys: target => {
+        ownKeysCalls++
+        return ownKeysCalls === 1 ? Reflect.ownKeys(target) : [...Reflect.ownKeys(target), 'lateExtra']
+      },
+      getOwnPropertyDescriptor: (target, key) => key === 'lateExtra'
+        ? { configurable: true, enumerable: true, writable: true, value: true }
+        : Reflect.getOwnPropertyDescriptor(target, key),
+      get: () => { getCalls++; throw new Error('must not be read') }
+    })
+
+    expect(preflightUsualAndGeometry(makeSnapshot(), input as never)).toMatchObject({ usualPremiseReady: true })
+    expect(ownKeysCalls).toBe(1)
+    expect(getCalls).toBe(0)
+  })
+
+  // Break caught: a nested location is key-checked and descriptor-copied from different reflective states.
+  it('decodes a nested location from exactly one bulk descriptor snapshot', () => {
+    let ownKeysCalls = 0
+    let getCalls = 0
+    const input = discoveryPreflightInput()
+    input.location = new Proxy(input.location, {
+      ownKeys: target => {
+        ownKeysCalls++
+        return ownKeysCalls === 1 ? Reflect.ownKeys(target) : [...Reflect.ownKeys(target), 'lateExtra']
+      },
+      getOwnPropertyDescriptor: (target, key) => key === 'lateExtra'
+        ? { configurable: true, enumerable: true, writable: true, value: true }
+        : Reflect.getOwnPropertyDescriptor(target, key),
+      get: () => { getCalls++; throw new Error('must not be read') }
+    })
+
+    expect(preflightBasketDiscovery(makeSnapshot(), input as never)).toMatchObject({ baselineReady: true, completeCandidatePremiseCodes: ['2'] })
+    expect(ownKeysCalls).toBe(1)
+    expect(getCalls).toBe(0)
+  })
+
+  // Break caught: a line record is key-checked and descriptor-copied from different reflective states.
+  it('decodes a line record from exactly one bulk descriptor snapshot', () => {
+    let ownKeysCalls = 0
+    let getCalls = 0
+    const input = modePreflightInput()
+    input.lines[0] = new Proxy(input.lines[0]!, {
+      ownKeys: target => {
+        ownKeysCalls++
+        return ownKeysCalls === 1 ? Reflect.ownKeys(target) : [...Reflect.ownKeys(target), 'lateExtra']
+      },
+      getOwnPropertyDescriptor: (target, key) => key === 'lateExtra'
+        ? { configurable: true, enumerable: true, writable: true, value: true }
+        : Reflect.getOwnPropertyDescriptor(target, key),
+      get: () => { getCalls++; throw new Error('must not be read') }
+    })
+
+    expect(preflightEvidence(makeSnapshot(), input as never)).toMatchObject({ baselineReady: true, completeCandidatePremiseCodes: ['2'] })
+    expect(ownKeysCalls).toBe(1)
+    expect(getCalls).toBe(0)
+  })
+
   it.each([
     ['usual non-enumerable top', expectUsualSafeFailure, () => { const value = usualPreflightInput(); Object.defineProperty(value, 'hidden', { value: true }); return value }],
     ['usual symbol top', expectUsualSafeFailure, () => { const value = usualPreflightInput(); (value as any)[Symbol('hidden')] = true; return value }],
@@ -428,10 +490,68 @@ describe('evidence evaluation', () => {
     expect(preflightUsualAndGeometry(makeSnapshot(), usualPreflightInput() as never)).toMatchObject({ usualPremiseReady: true })
   })
 
-  it('rejects a huge sparse lines array without treating its declared length as work', () => {
-    const lines = new Array(10_000_000)
-    const startedAt = performance.now()
-    expectDiscoverySafeFailure(discoveryPreflightInput({ lines }))
-    expect(performance.now() - startedAt).toBeLessThan(250)
+  // Break caught: virtual dense indices are reflected before the request's maximum satisfiable raw-line count is checked.
+  it('rejects an over-bound virtual dense lines array before bulk reflection', () => {
+    const virtualLength = 9_901
+    const target = new Array(virtualLength)
+    let ownKeysCalls = 0
+    let virtualIndexDescriptorCalls = 0
+    const lines = new Proxy(target, {
+      ownKeys: () => {
+        ownKeysCalls++
+        return [...Array.from({ length: virtualLength }, (_, index) => String(index)), 'length']
+      },
+      getOwnPropertyDescriptor: (array, key) => {
+        if (key === 'length') return Reflect.getOwnPropertyDescriptor(array, key)
+        virtualIndexDescriptorCalls++
+        return { configurable: true, enumerable: true, writable: true, value: { itemCode: '10', quantityHundredths: 1 } }
+      }
+    })
+
+    const result = preflightBasketDiscovery(makeSnapshot(), discoveryPreflightInput({ lines }) as never)
+
+    expect(result).toMatchObject({ baselineReady: false, completeCandidatePremiseCodes: [], excludedByReason: {} })
+    expect(ownKeysCalls).toBe(0)
+    expect(virtualIndexDescriptorCalls).toBe(0)
+  })
+
+  it('rejects an array whose bulk descriptor snapshot changes the early length', () => {
+    const target = new Array(2)
+    Object.defineProperty(target, '0', {
+      configurable: true,
+      enumerable: true,
+      writable: true,
+      value: { itemCode: '10', quantityHundredths: 100 }
+    })
+    let lengthDescriptorCalls = 0
+    let ownKeysCalls = 0
+    let getCalls = 0
+    const lines = new Proxy(target, {
+      ownKeys: array => { ownKeysCalls++; return Reflect.ownKeys(array) },
+      getOwnPropertyDescriptor: (array, key) => {
+        const descriptor = Reflect.getOwnPropertyDescriptor(array, key)
+        if (key === 'length' && ++lengthDescriptorCalls === 1) return { ...descriptor!, value: 1 }
+        return descriptor
+      },
+      get: () => { getCalls++; throw new Error('must not be read') }
+    })
+
+    expect(preflightBasketDiscovery(makeSnapshot(), discoveryPreflightInput({ lines }) as never)).toMatchObject({
+      baselineReady: false,
+      completeCandidatePremiseCodes: [],
+      excludedByReason: {}
+    })
+    expect(lengthDescriptorCalls).toBe(2)
+    expect(ownKeysCalls).toBe(1)
+    expect(getCalls).toBe(0)
+  })
+
+  it('accepts the maximum raw-line count that can satisfy the snapshot basket rules', () => {
+    const lines = Array.from({ length: 9_900 }, () => ({ itemCode: '10', quantityHundredths: 1 }))
+
+    expect(preflightBasketDiscovery(makeSnapshot(), discoveryPreflightInput({ lines }) as never)).toMatchObject({
+      baselineReady: true,
+      completeCandidatePremiseCodes: ['2']
+    })
   })
 })
