@@ -113,6 +113,45 @@ describe('duplicate consolidation', () => {
     ])
   })
 
+  // Break caught: cell ordering uses source order or fails to put an earlier LocalDate first when all other keys tie.
+  it('sorts equal-key cells by earlier observed LocalDate under reversed input', () => {
+    const result = collapseObservationRows([
+      observation('2', '10', '1kg', 500, '2026-08-02'),
+      observation('2', '10', '1kg', 500, '2026-08-01')
+    ])
+    expect(result).toMatchObject({ exactDuplicateCount: 0, conflictingCellCount: 0 })
+    expect(result.cells).toEqual([
+      expect.objectContaining({ observedDate: '2026-08-01', premiseCode: '2', itemCode: '10', officialUnit: '1kg' }),
+      expect.objectContaining({ observedDate: '2026-08-02', premiseCode: '2', itemCode: '10', officialUnit: '1kg' })
+    ])
+  })
+
+  // Break caught: unseparated canonical fields or special unit text merge distinct valid observation tuples.
+  it('keeps ambiguous code boundaries and special-unit tuples distinct under input permutation', () => {
+    const rows = [
+      observation('1', '23', '|{}[],"', 100),
+      observation('12', '3', '|{}[],"', 200),
+      observation('1', '23', '\u0001|{}[],"', 300)
+    ]
+    const forward = collapseObservationRows(rows)
+    const reverse = collapseObservationRows([...rows].reverse())
+    expect(forward).toMatchObject({ exactDuplicateCount: 0, conflictingCellCount: 0 })
+    expect(reverse).toEqual(forward)
+    expect(forward.cells).toEqual([
+      expect.objectContaining({ premiseCode: '1', itemCode: '23', officialUnit: '\u0001|{}[],"', priceSen: 300 }),
+      expect.objectContaining({ premiseCode: '1', itemCode: '23', officialUnit: '|{}[],"', priceSen: 100 }),
+      expect.objectContaining({ premiseCode: '12', itemCode: '3', officialUnit: '|{}[],"', priceSen: 200 })
+    ])
+  })
+
+  // Break caught: separator-bearing source codes reach tuple grouping instead of failing canonical-code validation.
+  it.each([
+    observation('1|2', '3', '1kg', 500),
+    observation('1', '2|3', '1kg', 500)
+  ])('rejects separator-bearing canonical code input %p before grouping', invalid => {
+    expect(() => collapseObservationRows([invalid as never])).toThrow()
+  })
+
   // Break caught: non-integer or unsafe prices reach bigint quality arithmetic through the public domain boundary.
   it.each([1.5, -1, Number.MAX_SAFE_INTEGER + 1])('rejects invalid priceSen %p', priceSen => {
     expect(() => collapseObservationRows([row('1', priceSen)])).toThrow(RangeError)
@@ -190,26 +229,26 @@ describe('equal-premise references', () => {
     })
   })
 
-  // Break caught: a half-sen per-premise median truncates before the cross-premise median.
-  it('rounds an even per-premise median half up', () => {
+  // Break caught: a non-adjacent even per-premise median selects a middle value or truncates instead of half-up rounding.
+  it('rounds a non-adjacent even per-premise median half up', () => {
     const rows = [
-      row('10', 100, '2026-07-02'), row('10', 101, '2026-07-03'),
+      row('10', 100, '2026-07-02'), row('10', 103, '2026-07-03'),
       ...Array.from({ length: 9 }, (_, index) => row(String(index + 1), 100, '2026-07-31')),
-      ...Array.from({ length: 10 }, (_, index) => row(String(index + 11), 102, '2026-07-31'))
+      ...Array.from({ length: 10 }, (_, index) => row(String(index + 11), 103, '2026-07-31'))
     ]
     expect(buildReferenceStats(collapseObservationRows(rows).cells, '10', '2026-08-01')).toEqual({
-      status: 'ready', distinctPremises: 20, medianSen: 102, madSen: 1, robustScaleTimes10k: 200_000n
+      status: 'ready', distinctPremises: 20, medianSen: 103, madSen: 1, robustScaleTimes10k: 200_000n
     })
   })
 
-  // Break caught: the even cross-premise median truncates instead of half-up rounding.
-  it('rounds an even cross-premise median half up', () => {
+  // Break caught: a non-adjacent even cross-premise median selects a middle value or truncates instead of half-up rounding.
+  it('rounds a non-adjacent even cross-premise median half up', () => {
     const rows = [
       ...Array.from({ length: 10 }, (_, index) => row(String(index + 1), 100, '2026-07-31')),
-      ...Array.from({ length: 10 }, (_, index) => row(String(index + 11), 101, '2026-07-31'))
+      ...Array.from({ length: 10 }, (_, index) => row(String(index + 11), 103, '2026-07-31'))
     ]
     expect(buildReferenceStats(collapseObservationRows(rows).cells, '10', '2026-08-01')).toEqual({
-      status: 'ready', distinctPremises: 20, medianSen: 101, madSen: 1, robustScaleTimes10k: 200_000n
+      status: 'ready', distinctPremises: 20, medianSen: 102, madSen: 2, robustScaleTimes10k: 200_000n
     })
   })
 
