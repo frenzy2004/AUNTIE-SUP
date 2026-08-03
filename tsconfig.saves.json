@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.web.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@pricecatcher": ["src/pricecatcher/index.ts"], "@pricecatcher/*": ["src/pricecatcher/*"],
+      "@saves": ["src/saves/main.tsx"], "@saves/*": ["src/saves/*"]
+    },
+    "types": ["vite/client", "vitest/globals", "@testing-library/jest-dom"]
+  },
+  "include": ["src/saves/**/*", "src/pricecatcher/**/*"]
+}

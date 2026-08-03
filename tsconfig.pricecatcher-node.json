@@ -1,0 +1,8 @@
+{
+  "extends": "./tsconfig.node.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": { "@pricecatcher": ["src/pricecatcher/index.ts"], "@pricecatcher/*": ["src/pricecatcher/*"] }
+  },
+  "include": ["src/pricecatcher/**/*", "scripts/pricecatcher/**/*", "data/pricecatcher/**/*.test.ts", "playwright.saves.config.ts", "vite.saves.config.ts", "vitest.config.ts", "vitest.saves.config.ts"]
+}

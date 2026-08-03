@@ -1,0 +1,9 @@
+{
+  "compilerOptions": {
+    "target": "ES2022", "module": "ESNext", "moduleResolution": "Bundler",
+    "lib": ["ES2022"], "strict": true, "skipLibCheck": true,
+    "isolatedModules": true, "noEmit": true, "types": []
+  },
+  "include": ["src/pricecatcher/**/*.ts"],
+  "exclude": ["src/pricecatcher/**/*.test.ts", "src/pricecatcher/**/__tests__/**"]
+}
