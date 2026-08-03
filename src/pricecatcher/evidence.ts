@@ -2,7 +2,7 @@ import { addLocalDates, malaysiaDateAt } from './dates'
 import { haversineMetres } from './distance'
 import { canonicalizeCode, compareCanonicalCodes } from './ids'
 import { checkedAdd } from './money'
-import { ISOInstantSchema, type ISOInstant, type LocalDate, type ReasonCode, type Sen } from './contracts/common'
+import { CanonicalCodeSchema, ISOInstantSchema, type ISOInstant, type LocalDate, type ReasonCode, type Sen } from './contracts/common'
 import {
   RecommendationInputSchema, RecommendationRequestSchema,
   type ExclusionCounts, type RecommendationInput, type RecommendationRequest, type ReasonDetail
@@ -56,6 +56,14 @@ type CandidateAssessment = { complete?: CompletePremiseEvidence; bucket?: Failur
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value)
 const hasOwn = (value: object, key: string): boolean => Object.prototype.hasOwnProperty.call(value, key)
+const hasExactKeys = (value: Record<string, unknown>, keys: readonly string[]): boolean => {
+  const actual = Object.keys(value)
+  return actual.length === keys.length && keys.every(key => hasOwn(value, key))
+}
+const parseCanonicalPreflightCode = (value: unknown): string | null => {
+  if (typeof value !== 'string' || !/^(0|[1-9]\d*)$/.test(value)) return null
+  try { return CanonicalCodeSchema.parse(value) } catch { return null }
+}
 const detailReason = (scope: 'baseline' | 'candidate', bucket: FailureBucket): ReasonCode =>
   bucket === 'date-mismatch' ? 'candidate-date-mismatch' : `${scope}-${bucket}` as ReasonCode
 const detailBucket = (detail: ReasonDetail): FailureBucket => {
@@ -205,7 +213,9 @@ const preflightInput = (snapshot: PilotSnapshotV1, input: BasketDiscoveryInput, 
 }
 
 const normalizePreflightInput = (snapshot: PilotSnapshotV1, value: unknown, requireMode: boolean): { input: BasketDiscoveryInput; mode?: RecommendationInput['mode']; evaluatedDate: LocalDate } | null => {
-  if (!isRecord(value) || !ISOInstantSchema.safeParse(value.evaluatedAt).success || !isRecord(value.location)) return null
+  const keys = requireMode ? ['evaluatedAt', 'location', 'usualPremiseCode', 'lines', 'mode'] : ['evaluatedAt', 'location', 'usualPremiseCode', 'lines']
+  if (!isRecord(value) || !hasExactKeys(value, keys) || !ISOInstantSchema.safeParse(value.evaluatedAt).success || !isRecord(value.location) ||
+      !hasExactKeys(value.location, ['latitude', 'longitude', 'accuracyMetres'])) return null
   const evaluatedAt = value.evaluatedAt as ISOInstant
   const evaluatedDate = malaysiaDateAt(evaluatedAt)
   if (new Date(evaluatedAt).getTime() < new Date(snapshot.compiledAt).getTime() - 300_000 || evaluatedDate < snapshot.dataAsOfDate ||
@@ -214,13 +224,13 @@ const normalizePreflightInput = (snapshot: PilotSnapshotV1, value: unknown, requ
   if (![latitude, longitude, accuracyMetres].every(item => typeof item === 'number' && Number.isFinite(item)) ||
       (latitude as number) < -90 || (latitude as number) > 90 || (longitude as number) < -180 || (longitude as number) > 180 ||
       (accuracyMetres as number) < 0 || (accuracyMetres as number) > 100) return null
-  const usualPremiseCode = canonicalizeCode(value.usualPremiseCode)
+  const usualPremiseCode = parseCanonicalPreflightCode(value.usualPremiseCode)
   if (usualPremiseCode === null || !snapshot.premises.some(premise => premise.code === usualPremiseCode) || !Array.isArray(value.lines) || value.lines.length === 0) return null
   if (requireMode && value.mode !== 'walk' && value.mode !== 'drive') return null
   const rawLines: Array<{ itemCode: string; quantityHundredths: number }> = []
   for (const rawLine of value.lines) {
-    if (!isRecord(rawLine)) return null
-    const itemCode = canonicalizeCode(rawLine.itemCode)
+    if (!isRecord(rawLine) || !hasExactKeys(rawLine, ['itemCode', 'quantityHundredths'])) return null
+    const itemCode = parseCanonicalPreflightCode(rawLine.itemCode)
     if (itemCode === null || typeof rawLine.quantityHundredths !== 'number' || !Number.isSafeInteger(rawLine.quantityHundredths) || rawLine.quantityHundredths < 1 || !snapshot.items.some(item => item.code === itemCode)) return null
     rawLines.push({ itemCode, quantityHundredths: rawLine.quantityHundredths })
   }
@@ -245,23 +255,30 @@ export function preflightBasketDiscovery(snapshot: PilotSnapshotV1, input: Baske
 }
 
 export function preflightUsualAndGeometry(snapshot: PilotSnapshotV1, input: Pick<EvidencePreflightInput, 'evaluatedAt' | 'location' | 'usualPremiseCode'>): UsualAndGeometryPreflight {
-  const premise = snapshot.premises.find(candidate => candidate.code === input.usualPremiseCode)
-  const location = input.location
-  if (!premise || !ISOInstantSchema.safeParse(input.evaluatedAt).success || !location ||
+  const safe = (): UsualAndGeometryPreflight => ({ usualPremiseReady: false, usualHasRecentPilotData: false, coordinateViablePremiseCount: 0, label: 'within 5 km' })
+  const value: unknown = input
+  if (!isRecord(value) || !hasExactKeys(value, ['evaluatedAt', 'location', 'usualPremiseCode']) || !isRecord(value.location) ||
+      !hasExactKeys(value.location, ['latitude', 'longitude', 'accuracyMetres']) || !ISOInstantSchema.safeParse(value.evaluatedAt).success) return safe()
+  const usualPremiseCode = parseCanonicalPreflightCode(value.usualPremiseCode)
+  const premise = usualPremiseCode === null ? undefined : snapshot.premises.find(candidate => candidate.code === usualPremiseCode)
+  const location = { latitude: value.location.latitude, longitude: value.location.longitude, accuracyMetres: value.location.accuracyMetres }
+  if (!premise ||
       !Number.isFinite(location.latitude) || !Number.isFinite(location.longitude) || !Number.isFinite(location.accuracyMetres) ||
-      location.latitude < -90 || location.latitude > 90 || location.longitude < -180 || location.longitude > 180 || location.accuracyMetres < 0 || location.accuracyMetres > 100) {
-    return { usualPremiseReady: false, usualHasRecentPilotData: false, coordinateViablePremiseCount: 0, label: 'within 5 km' }
+      (location.latitude as number) < -90 || (location.latitude as number) > 90 || (location.longitude as number) < -180 || (location.longitude as number) > 180 || (location.accuracyMetres as number) < 0 || (location.accuracyMetres as number) > 100) {
+    return safe()
   }
-  const evaluatedDate = malaysiaDateAt(input.evaluatedAt)
-  if (new Date(input.evaluatedAt).getTime() < new Date(snapshot.compiledAt).getTime() - 300_000 || evaluatedDate < snapshot.dataAsOfDate ||
+  const evaluatedAt = value.evaluatedAt as ISOInstant
+  const evaluatedDate = malaysiaDateAt(evaluatedAt)
+  if (new Date(evaluatedAt).getTime() < new Date(snapshot.compiledAt).getTime() - 300_000 || evaluatedDate < snapshot.dataAsOfDate ||
       (snapshot.dataAsOfDate !== evaluatedDate && snapshot.dataAsOfDate !== addLocalDates(evaluatedDate, -1))) {
-    return { usualPremiseReady: false, usualHasRecentPilotData: false, coordinateViablePremiseCount: 0, label: 'within 5 km' }
+    return safe()
   }
   const usualHasRecentPilotData = snapshot.evidence.filter(cell => cell.premiseCode === premise.code).some(cell => {
     const observation = selectedObservation(cell)
     return observation.status === 'eligible' && withinFreshTargetDates(observation.observedDate, snapshot.dataAsOfDate)
   })
-  const coordinateViablePremiseCount = snapshot.premises.filter(candidate => candidate.code !== premise.code && candidate.verificationStatus === 'field-verified' && candidate.verifiedOn <= evaluatedDate && candidate.verificationExpiresOn >= evaluatedDate && haversineMetres(input.location, candidate) <= 5000).length
+  const coordinates: RecommendationInput['location'] = { latitude: location.latitude as number, longitude: location.longitude as number, accuracyMetres: location.accuracyMetres as number }
+  const coordinateViablePremiseCount = snapshot.premises.filter(candidate => candidate.code !== premise.code && candidate.verificationStatus === 'field-verified' && candidate.verifiedOn <= evaluatedDate && candidate.verificationExpiresOn >= evaluatedDate && haversineMetres(coordinates, candidate) <= 5000).length
   return { usualPremiseReady: true, usualHasRecentPilotData, coordinateViablePremiseCount, label: 'within 5 km' }
 }
 

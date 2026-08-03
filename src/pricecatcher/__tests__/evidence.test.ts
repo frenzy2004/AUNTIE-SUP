@@ -7,6 +7,21 @@ import {
   snapshotWithThreePremisesAndOneBadCandidate, validInput, eligibleCell
 } from './snapshotFixture'
 
+const usualPreflightInput = (overrides: Record<string, unknown> = {}) => {
+  const { evaluatedAt, location, usualPremiseCode } = validInput()
+  return { evaluatedAt, location, usualPremiseCode, ...overrides }
+}
+
+const discoveryPreflightInput = (overrides: Record<string, unknown> = {}) => {
+  const { evaluatedAt, location, usualPremiseCode, lines } = validInput()
+  return { evaluatedAt, location, usualPremiseCode, lines, ...overrides }
+}
+
+const modePreflightInput = (overrides: Record<string, unknown> = {}) => {
+  const { evaluatedAt, location, usualPremiseCode, lines, mode } = validInput()
+  return { evaluatedAt, location, usualPremiseCode, lines, mode, ...overrides }
+}
+
 describe('evidence evaluation', () => {
   // Break caught: clocks before the five-minute compile grace are permitted.
   it('rejects an evaluation clock before compilation', () => {
@@ -72,15 +87,15 @@ describe('evidence evaluation', () => {
 
   it('uses five kilometre discovery before mode selection and exact mode radii afterwards', () => {
     const snapshot = makeSnapshot({ premises: makeSnapshot().premises.map(premise => premise.code === '2' ? { ...premise, longitude: 101.027 } : premise) })
-    const { mode: _mode, ...discoveryInput } = validInput()
+    const discoveryInput = discoveryPreflightInput()
     const discovery = preflightBasketDiscovery(snapshot, discoveryInput)
     expect(discovery.completeCandidatePremiseCodes).toEqual(['2'])
-    expect(preflightEvidence(snapshot, validInput({ mode: 'walk' })).completeCandidatePremiseCodes).toEqual([])
-    expect(preflightEvidence(snapshot, validInput({ mode: 'drive' })).completeCandidatePremiseCodes).toEqual(['2'])
+    expect(preflightEvidence(snapshot, modePreflightInput({ mode: 'walk' }) as never).completeCandidatePremiseCodes).toEqual([])
+    expect(preflightEvidence(snapshot, modePreflightInput({ mode: 'drive' }) as never).completeCandidatePremiseCodes).toEqual(['2'])
   })
 
   it('does usual and coordinate preflight without pretending an empty basket is complete', () => {
-    const { lines: _lines, mode: _mode, ...usualInput } = validInput()
+    const usualInput = usualPreflightInput()
     const result = preflightUsualAndGeometry(makeSnapshot(), usualInput)
     expect(result).toMatchObject({ usualHasRecentPilotData: true, coordinateViablePremiseCount: 1, label: 'within 5 km' })
   })
@@ -126,14 +141,14 @@ describe('evidence evaluation', () => {
     const snapshot = makeSnapshot({ evidence: [{ premiseCode: '1', itemCode: '10', officialUnit: 'each', observations: [
       { status: 'anomalous', observedDate: '2026-08-01', reason: 'outside-ratio-bound' }, { status: 'anomalous', observedDate: '2026-08-02', reason: 'outside-ratio-bound' }
     ] }, makeSnapshot().evidence[1]!] })
-    const { lines: _lines, mode: _mode, ...usualInput } = validInput()
+    const usualInput = usualPreflightInput()
     expect(preflightUsualAndGeometry(snapshot, usualInput)).toMatchObject({ usualPremiseReady: true, usualHasRecentPilotData: false, coordinateViablePremiseCount: 1 })
   })
 
   it('includes a field-verified coordinate candidate exactly at the inclusive five kilometre geometry boundary', () => {
     const longitudeDelta = 5000 / 6_371_008.8 * 180 / Math.PI
     const snapshot = makeSnapshot({ premises: makeSnapshot().premises.map(premise => ({ ...premise, latitude: 0, longitude: premise.code === '1' ? 101 : 101 + longitudeDelta })) })
-    const { lines: _lines, mode: _mode, ...usualInput } = validInput({ location: { latitude: 0, longitude: 101, accuracyMetres: 10 } })
+    const usualInput = usualPreflightInput({ location: { latitude: 0, longitude: 101, accuracyMetres: 10 } })
     expect(preflightUsualAndGeometry(snapshot, usualInput).coordinateViablePremiseCount).toBe(1)
   })
 
@@ -180,23 +195,23 @@ describe('evidence evaluation', () => {
     ['unknown usual premise', makeSnapshot(), { ...validInput(), usualPremiseCode: '99' }],
     ['unknown item', makeSnapshot(), { ...validInput(), lines: [{ itemCode: '99', quantityHundredths: 100 }] }]
   ])('fails closed without throwing for discovery preflight with %s', (_name, snapshot, input) => {
-    const { mode: _mode, ...discoveryInput } = input
+    const discoveryInput = { evaluatedAt: input.evaluatedAt, location: input.location, usualPremiseCode: input.usualPremiseCode, lines: input.lines }
     expect(() => preflightBasketDiscovery(snapshot, discoveryInput as never)).not.toThrow()
     expect(preflightBasketDiscovery(snapshot, discoveryInput as never)).toMatchObject({ baselineReady: false, completeCandidatePremiseCodes: [], excludedByReason: {} })
   })
 
   it('fails closed without throwing for mode-aware preflight with an invalid explicit mode', () => {
-    const input = { ...validInput(), mode: 'fly' }
+    const input = modePreflightInput({ mode: 'fly' })
     expect(() => preflightEvidence(makeSnapshot(), input as never)).not.toThrow()
     expect(preflightEvidence(makeSnapshot(), input as never)).toMatchObject({ baselineReady: false, completeCandidatePremiseCodes: [], excludedByReason: {} })
   })
 
   it('labels basket discovery precisely without attributing that label to a mode-aware preflight', () => {
-    const { mode: _mode, ...discoveryInput } = validInput()
+    const discoveryInput = discoveryPreflightInput()
     expect(preflightBasketDiscovery(makeSnapshot(), discoveryInput)).toMatchObject({
       label: 'complete for these items within 5 km discovery—choose a travel mode to apply its radius'
     })
-    expect(preflightEvidence(makeSnapshot(), validInput())).not.toHaveProperty('label')
+    expect(preflightEvidence(makeSnapshot(), modePreflightInput() as never)).not.toHaveProperty('label')
   })
 
   it('serializes candidate exclusion buckets identically after premise/evidence permutation', () => {
@@ -262,12 +277,50 @@ describe('evidence evaluation', () => {
   it('uses inclusive and outside walk, drive, and discovery boundaries', () => {
     const atDistance = (metres: number) => makeSnapshot({ premises: makeSnapshot().premises.map(premise => ({ ...premise, latitude: 0, longitude: premise.code === '1' ? 101 : 101 + metres / 6_371_008.8 * 180 / Math.PI })) })
     const location = { latitude: 0, longitude: 101, accuracyMetres: 10 }
-    const { mode: _mode, ...discoveryInput } = validInput({ location })
-    expect(preflightEvidence(atDistance(2000), validInput({ location, mode: 'walk' })).completeCandidatePremiseCodes).toEqual(['2'])
-    expect(preflightEvidence(atDistance(2001), validInput({ location, mode: 'walk' })).completeCandidatePremiseCodes).toEqual([])
-    expect(preflightEvidence(atDistance(5000), validInput({ location, mode: 'drive' })).completeCandidatePremiseCodes).toEqual(['2'])
-    expect(preflightEvidence(atDistance(5001), validInput({ location, mode: 'drive' })).completeCandidatePremiseCodes).toEqual([])
+    const discoveryInput = discoveryPreflightInput({ location })
+    expect(preflightEvidence(atDistance(2000), modePreflightInput({ location, mode: 'walk' }) as never).completeCandidatePremiseCodes).toEqual(['2'])
+    expect(preflightEvidence(atDistance(2001), modePreflightInput({ location, mode: 'walk' }) as never).completeCandidatePremiseCodes).toEqual([])
+    expect(preflightEvidence(atDistance(5000), modePreflightInput({ location, mode: 'drive' }) as never).completeCandidatePremiseCodes).toEqual(['2'])
+    expect(preflightEvidence(atDistance(5001), modePreflightInput({ location, mode: 'drive' }) as never).completeCandidatePremiseCodes).toEqual([])
     expect(preflightBasketDiscovery(atDistance(5000), discoveryInput).completeCandidatePremiseCodes).toEqual(['2'])
     expect(preflightBasketDiscovery(atDistance(5001), discoveryInput).completeCandidatePremiseCodes).toEqual([])
+  })
+
+  // Break caught: the usual preflight dereferences an async/transient container before validation.
+  it.each([null, undefined, [], { location: { latitude: 3 } }])('fails closed without throwing for malformed usual preflight container %p', input => {
+    expect(() => preflightUsualAndGeometry(makeSnapshot(), input as never)).not.toThrow()
+    expect(preflightUsualAndGeometry(makeSnapshot(), input as never)).toMatchObject({ usualPremiseReady: false, usualHasRecentPilotData: false, coordinateViablePremiseCount: 0 })
+  })
+
+  it('keeps valid exact reduced preflight shapes functional', () => {
+    expect(preflightUsualAndGeometry(makeSnapshot(), usualPreflightInput() as never)).toMatchObject({ usualPremiseReady: true, coordinateViablePremiseCount: 1 })
+    expect(preflightBasketDiscovery(makeSnapshot(), discoveryPreflightInput() as never)).toMatchObject({ baselineReady: true, completeCandidatePremiseCodes: ['2'] })
+    expect(preflightEvidence(makeSnapshot(), modePreflightInput() as never)).toMatchObject({ baselineReady: true, completeCandidatePremiseCodes: ['2'] })
+  })
+
+  it.each([
+    ['usual extra top-level key', preflightUsualAndGeometry, usualPreflightInput({ extra: true }), { usualPremiseReady: false }],
+    ['usual nested location key', preflightUsualAndGeometry, usualPreflightInput({ location: { latitude: 3, longitude: 101, accuracyMetres: 10, extra: true } }), { usualPremiseReady: false }],
+    ['discovery extra top-level key', preflightBasketDiscovery, discoveryPreflightInput({ extra: true }), { baselineReady: false, completeCandidatePremiseCodes: [] }],
+    ['discovery explicit mode', preflightBasketDiscovery, discoveryPreflightInput({ mode: 'walk' }), { baselineReady: false, completeCandidatePremiseCodes: [] }],
+    ['discovery nested line key', preflightBasketDiscovery, discoveryPreflightInput({ lines: [{ itemCode: '10', quantityHundredths: 100, extra: true }] }), { baselineReady: false, completeCandidatePremiseCodes: [] }],
+    ['mode-aware extra top-level key', preflightEvidence, modePreflightInput({ extra: true }), { baselineReady: false, completeCandidatePremiseCodes: [] }],
+    ['mode-aware nested location key', preflightEvidence, modePreflightInput({ location: { latitude: 3, longitude: 101, accuracyMetres: 10, extra: true } }), { baselineReady: false, completeCandidatePremiseCodes: [] }],
+    ['mode-aware nested line key', preflightEvidence, modePreflightInput({ lines: [{ itemCode: '10', quantityHundredths: 100, extra: true }] }), { baselineReady: false, completeCandidatePremiseCodes: [] }]
+  ] as const)('rejects unknown fields at the exact reduced %s boundary', (_name, preflight, input, expected) => {
+    expect(() => preflight(makeSnapshot(), input as never)).not.toThrow()
+    expect(preflight(makeSnapshot(), input as never)).toMatchObject(expected)
+  })
+
+  it.each([1, '01', ' 1 ', '1.0'] as const)('rejects non-canonical usual code %p at every reduced preflight boundary', code => {
+    expect(preflightUsualAndGeometry(makeSnapshot(), usualPreflightInput({ usualPremiseCode: code }) as never)).toMatchObject({ usualPremiseReady: false })
+    expect(preflightBasketDiscovery(makeSnapshot(), discoveryPreflightInput({ usualPremiseCode: code }) as never)).toMatchObject({ baselineReady: false, completeCandidatePremiseCodes: [] })
+    expect(preflightEvidence(makeSnapshot(), modePreflightInput({ usualPremiseCode: code }) as never)).toMatchObject({ baselineReady: false, completeCandidatePremiseCodes: [] })
+  })
+
+  it.each([10, '010', ' 10 ', '10.0'] as const)('rejects non-canonical item code %p at basket reduced preflight boundaries', code => {
+    const lines = [{ itemCode: code, quantityHundredths: 100 }]
+    expect(preflightBasketDiscovery(makeSnapshot(), discoveryPreflightInput({ lines }) as never)).toMatchObject({ baselineReady: false, completeCandidatePremiseCodes: [] })
+    expect(preflightEvidence(makeSnapshot(), modePreflightInput({ lines }) as never)).toMatchObject({ baselineReady: false, completeCandidatePremiseCodes: [] })
   })
 })
