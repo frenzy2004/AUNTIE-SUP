@@ -61,6 +61,15 @@ const coverage = (scope: 'candidate-universe' | 'selected-content' = 'selected-c
   items: Array.from({ length: 5 }, (_, item) => ({ itemCode: String(item), officialName: `Item ${item}`, officialUnit: 'kg', itemGroup: 'food', itemCategory: 'fresh', coveredDates: 10, qualifyingPremiseCoverageDates: 10, qualifyingDateRateBasisPoints: 7142, meanPremiseCoverageBasisPoints: 7000, highCoverage: true })),
   passesCoverageCandidateGate: true, failureReasons: []
 })
+const candidateCoverageWithSpareHighCoverageItem = (): any => {
+  const value = coverage('candidate-universe')
+  value.items.push({
+    itemCode: '5', officialName: 'Item 5', officialUnit: 'kg', itemGroup: 'food', itemCategory: 'fresh',
+    coveredDates: 10, qualifyingPremiseCoverageDates: 10, qualifyingDateRateBasisPoints: 7142,
+    meanPremiseCoverageBasisPoints: 7000, highCoverage: true
+  })
+  return value
+}
 const distance = (): any => ({
   schemaVersion: 1, transformVersion: PRICECATCHER_TRANSFORM_VERSION, throughDate: '2026-08-03', sourceLockSha256: sha, dataAsOfDate: '2026-08-03', coverageReportSha256: sha, microzonesSha256: sha, premisesSha256: sha, itemsSha256: sha,
   referenceAndTargetDates: dates(60), targetDates: dates(30), finalPremiseCodes: Array.from({ length: 10 }, (_, index) => String(index)), finalItemCodes: Array.from({ length: 5 }, (_, index) => String(index)),
@@ -78,12 +87,52 @@ const fixtureLock = (analysisStartDate: string): any => ({
     { role: 'transactions', yearMonth: '2026-08', manifest: manifest('https://fixture.test/2026-08.csv') }
   ]
 })
+const officialFeasibilityLock = (): any => ({
+  ...fixtureLock('2026-06-05'),
+  sourceKind: 'official',
+  sources: [
+    { role: 'transactions', yearMonth: '2026-06', manifest: manifest('https://storage.data.gov.my/pricecatcher/pricecatcher_2026-06.csv') },
+    { role: 'transactions', yearMonth: '2026-07', manifest: manifest('https://storage.data.gov.my/pricecatcher/pricecatcher_2026-07.csv') },
+    { role: 'transactions', yearMonth: '2026-08', manifest: manifest('https://storage.data.gov.my/pricecatcher/pricecatcher_2026-08.csv') },
+    { role: 'premise-lookup', manifest: manifest('https://storage.data.gov.my/pricecatcher/lookup_premise.csv') },
+    { role: 'item-lookup', manifest: manifest('https://storage.data.gov.my/pricecatcher/lookup_item.csv') }
+  ]
+})
+const publicLock = (): any => ({
+  schemaVersion: 1, sourceKind: 'official', throughDate: '2026-08-03', analysisStartDate: '2026-07-03', window: 'public',
+  sources: [
+    { role: 'transactions', yearMonth: '2026-07', manifest: manifest('https://storage.data.gov.my/pricecatcher/pricecatcher_2026-07.csv') },
+    { role: 'transactions', yearMonth: '2026-08', manifest: manifest('https://storage.data.gov.my/pricecatcher/pricecatcher_2026-08.csv') },
+    { role: 'premise-lookup', manifest: manifest('https://storage.data.gov.my/pricecatcher/lookup_premise.csv') },
+    { role: 'item-lookup', manifest: manifest('https://storage.data.gov.my/pricecatcher/lookup_item.csv') }
+  ]
+})
 const structuredSnapshot = (): any => ({
   ...snapshot,
   premises: [{ code: '1', officialName: 'Official', displayName: 'Display', address: 'Address', premiseType: 'market', latitude: 3, longitude: 101, coordinateAccuracyMetres: 10, verificationStatus: 'desk-verified', verifiedOn: '2026-08-01', verificationExpiresOn: '2026-08-03', coordinateAttribution: 'Official source' }],
   items: [{ code: '2', officialName: 'Rice', officialUnit: 'kg', qualifiers: [], quantityMode: 'whole-units' }],
   evidence: [{ premiseCode: '1', itemCode: '2', officialUnit: 'kg', observations: [{ status: 'eligible', observedDate: '2026-08-01', priceSen: 100 }, { status: 'eligible', observedDate: '2026-08-02', priceSen: 100 }] }]
 })
+const snapshotWithTwoPremises = (withItems: boolean): any => {
+  const value = structuredSnapshot()
+  value.premises.push({ ...value.premises[0], code: '3', officialName: 'Official 3', displayName: 'Display 3' })
+  if (withItems) value.evidence.push({ ...value.evidence[0], premiseCode: '3' })
+  else { value.items = []; value.evidence = [] }
+  return value
+}
+const snapshotWithTwoItemsAndNoPremises = (): any => {
+  const value = structuredSnapshot()
+  value.items.push({ ...value.items[0], code: '3', officialName: 'Rice 3' })
+  value.premises = []
+  value.evidence = []
+  return value
+}
+const expectOnlyIssue = (result: any, expected: { path: PropertyKey[], message: string }): void => {
+  expect(result.success).toBe(false)
+  if (!result.success) {
+    expect(result.error.issues.map((issue: any) => ({ path: issue.path, message: issue.message }))).toEqual([expected])
+  }
+}
 
 describe('runtime contracts', () => {
   it('accepts a complete Version 1 snapshot and pointer', () => {
@@ -198,13 +247,12 @@ describe('runtime contracts', () => {
   })
 
   it.each(['2026-07-02', '2026-07-04'])('rejects public source locks starting %s instead of exactly H−31', analysisStartDate => {
-    const lock = { schemaVersion: 1, sourceKind: 'official', throughDate: '2026-08-03', analysisStartDate, window: 'public', sources: [
-      { role: 'transactions', yearMonth: '2026-07', manifest: manifest('https://storage.data.gov.my/pricecatcher/pricecatcher_2026-07.csv') },
-      { role: 'transactions', yearMonth: '2026-08', manifest: manifest('https://storage.data.gov.my/pricecatcher/pricecatcher_2026-08.csv') },
-      { role: 'premise-lookup', manifest: manifest('https://storage.data.gov.my/pricecatcher/lookup_premise.csv') },
-      { role: 'item-lookup', manifest: manifest('https://storage.data.gov.my/pricecatcher/lookup_item.csv') }
-    ] }
-    expect(() => SourceLockV1Schema.parse(lock)).toThrow()
+    const lock = publicLock()
+    expect(SourceLockV1Schema.parse(lock).analysisStartDate).toBe('2026-07-03')
+    lock.analysisStartDate = analysisStartDate
+    expectOnlyIssue(SourceLockV1Schema.safeParse(lock), {
+      path: ['analysisStartDate'], message: 'public lock starts exactly 31 days before through date'
+    })
   })
 
   it.each([
@@ -212,17 +260,12 @@ describe('runtime contracts', () => {
     ['premise lookup', 3, 'https://storage.data.gov.my/pricecatcher/wrong_premise.csv'],
     ['item lookup', 4, 'https://storage.data.gov.my/pricecatcher/wrong_item.csv']
   ])('rejects a wrong official %s URL independently', (_role, index, url) => {
-    const lock = fixtureLock('2026-06-05')
-    lock.sourceKind = 'official'
-    lock.sources = [
-      { role: 'transactions', yearMonth: '2026-06', manifest: manifest('https://storage.data.gov.my/pricecatcher/pricecatcher_2026-06.csv') },
-      { role: 'transactions', yearMonth: '2026-07', manifest: manifest('https://storage.data.gov.my/pricecatcher/pricecatcher_2026-07.csv') },
-      { role: 'transactions', yearMonth: '2026-08', manifest: manifest('https://storage.data.gov.my/pricecatcher/pricecatcher_2026-08.csv') },
-      { role: 'premise-lookup', manifest: manifest('https://storage.data.gov.my/pricecatcher/lookup_premise.csv') },
-      { role: 'item-lookup', manifest: manifest('https://storage.data.gov.my/pricecatcher/lookup_item.csv') }
-    ]
+    const lock = officialFeasibilityLock()
+    expect(SourceLockV1Schema.parse(lock).sourceKind).toBe('official')
     lock.sources[index].manifest.url = url
-    expect(() => SourceLockV1Schema.parse(lock)).toThrow()
+    expectOnlyIssue(SourceLockV1Schema.safeParse(lock), {
+      path: ['sources'], message: 'official source URL does not match its role'
+    })
   })
 
   it.each([
@@ -231,34 +274,44 @@ describe('runtime contracts', () => {
     ['rejects HTTPS non-.test', 'https://fixture.invalid/data.csv', false]
   ])('%s synthetic source URLs', (_name, url, accepted) => {
     const lock = fixtureLock('2026-06-05')
-    lock.sources = lock.sources.map((entry: any) => ({ ...entry, manifest: { ...entry.manifest, url } }))
-    expect(SourceLockV1Schema.safeParse(lock).success).toBe(accepted)
+    expect(SourceLockV1Schema.parse(lock).sourceKind).toBe('synthetic-fixture')
+    lock.sources[0].manifest.url = url
+    const result = SourceLockV1Schema.safeParse(lock)
+    if (accepted) expect(result.success).toBe(true)
+    else expectOnlyIssue(result, { path: ['sources'], message: 'fixture sources must use HTTPS .test URLs' })
   })
 
   it.each([
-    ['premise basis points', (value: any) => { value.premises[0].dateCoverageBasisPoints = 7143 }],
-    ['near-daily flag', (value: any) => { value.premises[0].nearDaily = false; value.passesCoverageCandidateGate = false; value.failureReasons = ['insufficient-near-daily-premises'] }],
-    ['item qualifying basis points', (value: any) => { value.items[0].qualifyingDateRateBasisPoints = 7143 }],
-    ['high-coverage flag', (value: any) => { value.items[0].highCoverage = false }],
-    ['gate boolean', (value: any) => { value.passesCoverageCandidateGate = false }],
-    ['failure reason list', (value: any) => { value.failureReasons = ['insufficient-near-daily-premises'] }],
-    ['selected transform version', (value: any) => { value.transformVersion = '0.9.0' }]
-  ])('rejects a tampered derived coverage %s independently', (_name, mutate) => {
-    const value = coverage()
+    ['premise basis points', coverage, (value: any) => { value.premises[0].dateCoverageBasisPoints = 7143 }, { path: ['premises', 0], message: 'premise coverage metrics are inconsistent' }],
+    ['near-daily flag', coverage, (value: any) => { value.premises[0].nearDaily = false; value.passesCoverageCandidateGate = false; value.failureReasons = ['insufficient-near-daily-premises'] }, { path: ['premises', 0], message: 'premise coverage metrics are inconsistent' }],
+    ['item qualifying basis points', coverage, (value: any) => { value.items[0].qualifyingDateRateBasisPoints = 7143 }, { path: ['items', 0], message: 'item coverage metrics are inconsistent' }],
+    ['high-coverage flag', candidateCoverageWithSpareHighCoverageItem, (value: any) => { value.items[0].highCoverage = false }, { path: ['items', 0], message: 'item coverage metrics are inconsistent' }],
+    ['gate boolean', coverage, (value: any) => { value.passesCoverageCandidateGate = false }, { path: ['failureReasons'], message: 'coverage gate and failure reasons are inconsistent' }],
+    ['failure reason list', coverage, (value: any) => { value.failureReasons = ['insufficient-near-daily-premises'] }, { path: ['failureReasons'], message: 'coverage gate and failure reasons are inconsistent' }],
+    ['selected transform version', coverage, (value: any) => { value.transformVersion = '0.9.0' }, { path: ['transformVersion'], message: 'selected report must use the current transform version' }]
+  ])('rejects a tampered derived coverage %s independently', (_name, build, mutate, expectedIssue) => {
+    const value = build()
+    expect(CoverageCandidateReportV1Schema.safeParse(value).success).toBe(true)
     mutate(value)
-    expect(() => CoverageCandidateReportV1Schema.parse(value)).toThrow()
+    expectOnlyIssue(CoverageCandidateReportV1Schema.safeParse(value), expectedIssue)
   })
 
   it.each([
-    ['final premise codes', (report: any) => { report.finalPremiseCodes[9] = '10' }],
-    ['baseline premise partition', (report: any) => { report.microzones[0].baselines[9].premiseCode = '10' }],
-    ['baseline basis points', (report: any) => { report.microzones[0].baselines[0].completeAlternativeDateBasisPoints = 7001 }],
-    ['distance transform version', (report: any) => { report.transformVersion = '0.9.0' }],
-    ['local failure reasons', (report: any) => { report.passesDeskDemoGate = false; report.failureReasons = ['invalid-final-item-count'] }]
-  ])('rejects a tampered distance %s independently', (_name, mutate) => {
+    ['final premise codes', 'binding', (report: any) => { report.finalPremiseCodes[9] = '90' }, 'distance final codes must exactly match selected coverage rows'],
+    ['baseline premise partition', 'binding', (report: any) => { report.microzones[0].baselines[9].premiseCode = '90' }, 'microzone assignments must partition selected premises'],
+    ['baseline basis points', 'local', (report: any) => { report.microzones[0].baselines[0].completeAlternativeDateBasisPoints = 7001 }, { path: ['microzones', 0], message: 'microzone baselines are inconsistent' }],
+    ['distance transform version', 'local', (report: any) => { report.transformVersion = '0.9.0' }, { path: ['transformVersion'], message: 'distance report must use the current transform version' }],
+    ['local failure reasons', 'local', (report: any) => { report.passesDeskDemoGate = false; report.failureReasons = ['invalid-final-item-count'] }, { path: ['failureReasons'], message: 'desk gate and failure reasons are inconsistent' }]
+  ])('rejects a tampered distance %s independently', (_name, validation, mutate, expected) => {
+    const selected = CoverageCandidateReportV1Schema.parse(coverage())
     const report = distance()
+    expect(DistanceFeasibilityReportV1Schema.safeParse(report).success).toBe(true)
     mutate(report)
-    expect(() => validateDistanceFeasibilityReport(report, coverage())).toThrow()
+    const localResult = DistanceFeasibilityReportV1Schema.safeParse(report)
+    if (validation === 'binding') {
+      expect(localResult.success).toBe(true)
+      expect(() => validateDistanceFeasibilityReport(report, selected)).toThrow(expected as string)
+    } else expectOnlyIssue(localResult, expected as { path: PropertyKey[], message: string })
   })
 
   it('derives selected-coverage failure from the bound report instead of trusting distance output', () => {
@@ -266,52 +319,74 @@ describe('runtime contracts', () => {
     selected.premises[0] = { ...selected.premises[0], distinctPresenceDates: 9, dateCoverageBasisPoints: 6428, nearDaily: false }
     selected.passesCoverageCandidateGate = false
     selected.failureReasons = ['insufficient-near-daily-premises']
-    const failed = { ...distance(), passesDeskDemoGate: false, failureReasons: ['selected-coverage-gate-failed'] }
-    expect(validateDistanceFeasibilityReport(failed, selected).failureReasons).toEqual(['selected-coverage-gate-failed'])
-    expect(() => validateDistanceFeasibilityReport({ ...failed, failureReasons: [] }, selected)).toThrow()
+    expect(CoverageCandidateReportV1Schema.safeParse(selected).success).toBe(true)
+
+    const declaredFailure = { ...distance(), passesDeskDemoGate: false, failureReasons: ['selected-coverage-gate-failed'] }
+    expect(DistanceFeasibilityReportV1Schema.safeParse(declaredFailure).success).toBe(true)
+    expect(validateDistanceFeasibilityReport(declaredFailure, selected).failureReasons).toEqual(['selected-coverage-gate-failed'])
+
+    const locallyPassing = distance()
+    expect(DistanceFeasibilityReportV1Schema.safeParse(locallyPassing).success).toBe(true)
+    expect(() => validateDistanceFeasibilityReport(locallyPassing, selected)).toThrow('bound selected coverage does not satisfy the desk gate')
   })
 
   it.each([
-    ['duplicate premise', (value: any) => { value.premises = [value.premises[0], value.premises[0]]; value.evidence = [value.evidence[0], value.evidence[0]] }, 'duplicate premise code'],
-    ['duplicate item', (value: any) => { value.items = [value.items[0], value.items[0]]; value.evidence = [value.evidence[0], value.evidence[0]] }, 'duplicate item code'],
-    ['missing matrix cell', (value: any) => { value.evidence = [] }, 'evidence matrix is incomplete'],
-    ['duplicate evidence key', (value: any) => { value.premises = [value.premises[0], { ...value.premises[0], code: '3' }]; value.evidence = [value.evidence[0], { ...value.evidence[0] }] }, 'duplicate evidence key'],
-    ['unknown evidence code', (value: any) => { value.evidence[0].itemCode = '3' }, 'unknown evidence code'],
-    ['unit mismatch', (value: any) => { value.evidence[0].officialUnit = 'g' }, 'evidence unit mismatch'],
-    ['wrong evidence dates', (value: any) => { value.evidence[0].observations[0].observedDate = '2026-07-31' }, 'evidence dates must be sorted target dates'],
-    ['verification inversion', (value: any) => { value.premises[0].verificationExpiresOn = '2026-07-31' }, 'verification expiry precedes verification'],
-    ['consumer desk verification', (value: any) => { value.publicationMode = 'consumer-pilot' }, 'consumer pilot requires field verification'],
-    ['compiled-before-data date', (value: any) => { value.compiledAt = '2026-08-01T00:00:00.000Z' }, 'compiled before data date in Malaysia']
-  ])('rejects snapshot %s invariant', (_name, mutate, message) => {
-    const value = structuredSnapshot()
+    ['duplicate premise', () => snapshotWithTwoPremises(false), (value: any) => { value.premises[1].code = '1' }, { path: ['premises'], message: 'duplicate premise code' }],
+    ['duplicate item', snapshotWithTwoItemsAndNoPremises, (value: any) => { value.items[1].code = '2' }, { path: ['items'], message: 'duplicate item code' }],
+    ['missing matrix cell', structuredSnapshot, (value: any) => { value.evidence = [] }, { path: ['evidence'], message: 'evidence matrix is incomplete' }],
+    ['duplicate evidence key', () => snapshotWithTwoPremises(true), (value: any) => { value.evidence[1].premiseCode = '1' }, { path: ['evidence', 1], message: 'duplicate evidence key' }],
+    ['unknown evidence code', structuredSnapshot, (value: any) => { value.evidence[0].premiseCode = '3' }, { path: ['evidence', 0], message: 'unknown evidence code' }],
+    ['unit mismatch', structuredSnapshot, (value: any) => { value.evidence[0].officialUnit = 'g' }, { path: ['evidence', 0, 'officialUnit'], message: 'evidence unit mismatch' }],
+    ['wrong evidence dates', structuredSnapshot, (value: any) => { value.evidence[0].observations[0].observedDate = '2026-07-31' }, { path: ['evidence', 0, 'observations'], message: 'evidence dates must be sorted target dates' }],
+    ['verification inversion', structuredSnapshot, (value: any) => { value.premises[0].verificationExpiresOn = '2026-07-31' }, { path: ['premises', 0], message: 'verification expiry precedes verification' }],
+    ['consumer desk verification', structuredSnapshot, (value: any) => { value.publicationMode = 'consumer-pilot' }, { path: ['premises', 0], message: 'consumer pilot requires field verification' }],
+    ['compiled-before-data date', structuredSnapshot, (value: any) => { value.compiledAt = '2026-08-01T00:00:00.000Z' }, { path: ['compiledAt'], message: 'compiled before data date in Malaysia' }]
+  ])('rejects snapshot %s invariant', (_name, build, mutate, expectedIssue) => {
+    const value = build()
+    expect(PilotSnapshotV1Schema.safeParse(value).success).toBe(true)
     mutate(value)
-    const result = PilotSnapshotV1Schema.safeParse(value)
-    expect(result.success).toBe(false)
-    if (!result.success) expect(result.error.issues.map(issue => issue.message)).toContain(message)
+    expectOnlyIssue(PilotSnapshotV1Schema.safeParse(value), expectedIssue)
   })
 
   it('rejects source date inversion independently', () => {
     const value = structuredSnapshot()
+    expect(PilotSnapshotV1Schema.safeParse(value).success).toBe(true)
     value.sources = [{ ...value.sources[0], minObservedDate: '2026-08-03', maxObservedDate: '2026-08-02' }]
-    expect(() => PilotSnapshotV1Schema.parse(value)).toThrow()
+    expectOnlyIssue(PilotSnapshotV1Schema.safeParse(value), {
+      path: ['sources', 0, 'maxObservedDate'], message: 'source dates must be ordered'
+    })
   })
 
   it.each([
-    ['inconsistent candidate partition', { pilotPremiseCount: 3, inRadiusCandidateCount: 2, completeCandidateCount: 1, excludedByReason: { 'outside-radius': 1 } }],
-    ['candidate-stage result without exclusions', { kind: 'insufficient-evidence', primaryReason: 'candidate-missing', details: [] }],
-    ['pre-candidate result with exclusions', { kind: 'insufficient-evidence', primaryReason: 'location-missing', details: [], exclusions: { pilotPremiseCount: 0, inRadiusCandidateCount: 0, completeCandidateCount: 0, excludedByReason: {} } }],
-    ['result extra key', { kind: 'insufficient-evidence', primaryReason: 'location-missing', details: [], extra: true }]
-  ])('rejects result %s', (_name, value) => {
-    const schema = (value as any).pilotPremiseCount === undefined ? RecommendationResultSchema : ExclusionCountsSchema
-    expect(() => schema.parse(value)).toThrow()
+    ['inconsistent candidate partition', ExclusionCountsSchema,
+      () => ({ pilotPremiseCount: 3, inRadiusCandidateCount: 2, completeCandidateCount: 1, excludedByReason: { 'outside-radius': 1, missing: 1 } }),
+      (value: any) => { delete value.excludedByReason.missing }, { path: ['excludedByReason'], message: 'candidate partition counts are inconsistent' }],
+    ['candidate-stage result without exclusions', RecommendationResultSchema,
+      () => ({ kind: 'insufficient-evidence', primaryReason: 'candidate-missing', details: [], exclusions: { pilotPremiseCount: 0, inRadiusCandidateCount: 0, completeCandidateCount: 0, excludedByReason: {} } }),
+      (value: any) => { delete value.exclusions }, { path: ['exclusions'], message: 'required after candidate enumeration' }],
+    ['pre-candidate result with exclusions', RecommendationResultSchema,
+      () => ({ kind: 'insufficient-evidence', primaryReason: 'location-missing', details: [] }),
+      (value: any) => { value.exclusions = { pilotPremiseCount: 0, inRadiusCandidateCount: 0, completeCandidateCount: 0, excludedByReason: {} } },
+      { path: ['exclusions'], message: 'forbidden before candidate enumeration' }],
+    ['result extra key', RecommendationResultSchema,
+      () => ({ kind: 'insufficient-evidence', primaryReason: 'location-missing', details: [] }),
+      (value: any) => { value.extra = true }, { path: [], message: 'Unrecognized key: "extra"' }]
+  ])('rejects result %s', (_name, schema, build, mutate, expectedIssue) => {
+    const value = build()
+    expect(schema.safeParse(value).success).toBe(true)
+    mutate(value)
+    expectOnlyIssue(schema.safeParse(value), expectedIssue)
   })
 
   it.each([
-    ['Sen lower bound', SenSchema, -1],
-    ['Sen upper safe bound', SenSchema, Number.MAX_SAFE_INTEGER + 1],
-    ['signed Sen upper safe bound', SignedSenSchema, Number.MAX_SAFE_INTEGER + 1],
-    ['signed Sen lower safe bound', SignedSenSchema, Number.MIN_SAFE_INTEGER - 1]
-  ])('rejects %s', (_name, schema, value) => expect(() => schema.parse(value)).toThrow())
+    ['Sen lower bound', SenSchema, 0, -1],
+    ['Sen upper safe bound', SenSchema, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER + 1],
+    ['signed Sen upper safe bound', SignedSenSchema, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER + 1],
+    ['signed Sen lower safe bound', SignedSenSchema, Number.MIN_SAFE_INTEGER, Number.MIN_SAFE_INTEGER - 1]
+  ])('rejects %s', (_name, schema, valid, invalid) => {
+    expect(schema.safeParse(valid).success).toBe(true)
+    expect(schema.safeParse(invalid).success).toBe(false)
+  })
 
   it('accepts the nonnegative and signed safe-integer endpoints', () => {
     expect(SenSchema.parse(0)).toBe(0)
