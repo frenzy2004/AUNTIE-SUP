@@ -14,8 +14,13 @@ export const ISOInstantSchema = z.string().datetime({ offset: true })
   .refine(value => value.endsWith('Z'), 'UTC instant must end in Z')
 export const SenSchema = z.number().int().safe().nonnegative()
 export const SignedSenSchema = z.number().int().safe()
-export const CanonicalCodeSchema = z.string().regex(/^(0|[1-9]\d*)$/)
-  .refine(value => BigInt(value) <= BigInt(Number.MAX_SAFE_INTEGER), 'code exceeds the supported safe-integer range')
+const CANONICAL_CODE_PATTERN = /^(0|[1-9]\d*)$/
+const isWithinCanonicalCodeRange = (value: string): boolean => {
+  if (!CANONICAL_CODE_PATTERN.test(value)) return false
+  try { return BigInt(value) <= BigInt(Number.MAX_SAFE_INTEGER) } catch { return false }
+}
+export const CanonicalCodeSchema = z.string().regex(CANONICAL_CODE_PATTERN)
+  .refine(isWithinCanonicalCodeRange, 'code exceeds the supported safe-integer range')
 export const BuildIdSchema = z.string().regex(/^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,78}[A-Za-z0-9])?$/)
 export const Sha256Schema = z.string().regex(/^[a-f0-9]{64}$/)
 export const TransformVersionSchema = z.literal(PRICECATCHER_TRANSFORM_VERSION)

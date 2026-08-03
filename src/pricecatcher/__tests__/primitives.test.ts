@@ -41,6 +41,13 @@ describe('canonical identifiers', () => {
     expect(CanonicalCodeSchema.safeParse('9007199254740992').success).toBe(false)
   })
 
+  // Break caught: a later BigInt refinement throws after the canonical syntax refinement has already failed.
+  it.each(['abc', '1.2', 'constructor', '__proto__'])('returns a schema failure without throwing for %p', code => {
+    let success: boolean | undefined
+    expect(() => { success = CanonicalCodeSchema.safeParse(code).success }).not.toThrow()
+    expect(success).toBe(false)
+  })
+
   // Break caught: whitespace normalization changes, or Unicode lookalikes and embedded whitespace become valid code keys.
   it('trims surrounding ASCII and Unicode whitespace but rejects non-ASCII numeric forms', () => {
     expect(canonicalizeCode(' \t0002.000\u2003')).toBe('2')

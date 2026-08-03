@@ -258,6 +258,139 @@ describe('evidence evaluation', () => {
     expect(reads).toBe(0)
   })
 
+  // Break caught: top-level descriptor validation rejects later accessors before the locked semantic refusal stage.
+  it('preserves direct-evidence refusal precedence over later top-level accessors', () => {
+    const cases: Array<{ name: string; snapshot: ReturnType<typeof makeSnapshot>; request: Record<string, unknown>; keys: string[]; expectedReason: string }> = []
+    const add = (name: string, snapshot: ReturnType<typeof makeSnapshot>, request: Record<string, unknown>, keys: string[], expectedReason: string) => {
+      cases.push({ name, snapshot, request, keys, expectedReason })
+    }
+    add('invalid clock', makeSnapshot(), validInput({ evaluatedAt: '2026-08-03T02:54:59.000Z' }) as unknown as Record<string, unknown>, ['mode'], 'clock-invalid')
+    add('stale snapshot', snapshotWithOldData(), validInput() as unknown as Record<string, unknown>, ['mode'], 'snapshot-stale')
+    const missingLocation = validInput() as unknown as Record<string, unknown>
+    delete missingLocation.location
+    add('missing location', makeSnapshot(), missingLocation, ['lines', 'mode'], 'location-missing')
+    add('imprecise location', makeSnapshot(), validInput({ location: { latitude: 3, longitude: 101, accuracyMetres: 101 } }) as unknown as Record<string, unknown>, ['mode'], 'location-imprecise')
+    add('empty basket', makeSnapshot(), validInput({ lines: [] }) as unknown as Record<string, unknown>, ['fixedTripCostByPremiseCode'], 'basket-empty')
+
+    for (const entry of cases) {
+      let reads = 0
+      for (const key of entry.keys) Object.defineProperty(entry.request, key, {
+        enumerable: true,
+        get: () => { reads++; throw new Error(`${entry.name} later getter must not run`) }
+      })
+      expect(evaluateEvidence(entry.snapshot, entry.request), entry.name).toEqual({
+        kind: 'insufficient-evidence', primaryReason: entry.expectedReason, details: []
+      })
+      expect(reads, entry.name).toBe(0)
+    }
+  })
+
+  // Break caught: loose normalization runs before the strict shell has rejected an unknown top-level key name.
+  it.each([
+    ['invalid clock', makeSnapshot(), { ...validInput({ evaluatedAt: '2026-08-03T02:54:59.000Z' }), extra: true }, 'input-invalid'],
+    ['stale snapshot', snapshotWithOldData(), { ...validInput(), extra: true }, 'input-invalid'],
+    ['missing location', makeSnapshot(), (() => { const request = { ...validInput(), extra: true } as Record<string, unknown>; delete request.location; return request })(), 'input-invalid'],
+    ['imprecise location', makeSnapshot(), { ...validInput({ location: { latitude: 3, longitude: 101, accuracyMetres: 101 } }), extra: true }, 'input-invalid'],
+    ['empty basket', makeSnapshot(), { ...validInput({ lines: [] }), extra: true }, 'input-invalid'],
+    ['otherwise valid', makeSnapshot(), { ...validInput(), extra: true }, 'input-invalid'],
+    ['symbol key', makeSnapshot(), (() => { const request = validInput(); Object.defineProperty(request, Symbol('extra'), { enumerable: true, value: true }); return request })(), 'input-invalid']
+  ] as const)('rejects an extra key before the %s gate', (_name, snapshot, request, primaryReason) => {
+    expect(evaluateEvidence(snapshot, request)).toEqual({ kind: 'insufficient-evidence', primaryReason, details: [] })
+  })
+
+  // Break caught: bulk descriptor capture consults attacker-ordered later traps before the semantic field that decides the refusal.
+  it('reads allowed top-level descriptors lazily in semantic order after one key snapshot', () => {
+    const cases: Array<{ name: string; request: Record<string, unknown>; trappedKey: string; primaryReason: string }> = []
+    cases.push({
+      name: 'invalid clock', request: validInput({ evaluatedAt: '2026-08-03T02:54:59.000Z' }) as unknown as Record<string, unknown>,
+      trappedKey: 'mode', primaryReason: 'clock-invalid'
+    })
+    const missingLocation = validInput() as unknown as Record<string, unknown>
+    delete missingLocation.location
+    cases.push({ name: 'missing location', request: missingLocation, trappedKey: 'mode', primaryReason: 'location-missing' })
+    cases.push({
+      name: 'imprecise location',
+      request: validInput({ location: { latitude: 3, longitude: 101, accuracyMetres: 101 } }) as unknown as Record<string, unknown>,
+      trappedKey: 'mode', primaryReason: 'location-imprecise'
+    })
+    cases.push({
+      name: 'empty basket', request: validInput({ lines: [] }) as unknown as Record<string, unknown>,
+      trappedKey: 'fixedTripCostByPremiseCode', primaryReason: 'basket-empty'
+    })
+
+    for (const entry of cases) {
+      let ownKeysCalls = 0
+      let trappedDescriptorCalls = 0
+      const request = new Proxy(entry.request, {
+        ownKeys: target => {
+          ownKeysCalls++
+          return [entry.trappedKey, ...Reflect.ownKeys(target).filter(key => key !== entry.trappedKey)]
+        },
+        getOwnPropertyDescriptor: (target, key) => {
+          if (key === entry.trappedKey) {
+            trappedDescriptorCalls++
+            throw new Error(`${entry.name} later descriptor must not run`)
+          }
+          return Reflect.getOwnPropertyDescriptor(target, key)
+        },
+        get: () => { throw new Error('raw get must not run') }
+      })
+
+      expect(evaluateEvidence(makeSnapshot(), request), entry.name).toEqual({
+        kind: 'insufficient-evidence', primaryReason: entry.primaryReason, details: []
+      })
+      expect(ownKeysCalls, entry.name).toBe(1)
+      expect(trappedDescriptorCalls, entry.name).toBe(0)
+    }
+  })
+
+  // Break caught: malformed canonical values throw or prototype-named fixed-cost entries disappear during unknown-input decoding.
+  it('fails closed across evidence and normalization for every malformed code boundary', () => {
+    const malformed: Array<{ name: string; build: () => unknown }> = [
+      { name: 'usual premise', build: () => ({ ...validInput(), usualPremiseCode: 'abc' }) },
+      { name: 'basket line', build: () => ({ ...validInput(), lines: [{ itemCode: '1.2', quantityHundredths: 100 }] }) },
+      { name: 'constructor fixed-cost key', build: () => {
+        const request = validInput()
+        Object.defineProperty(request.fixedTripCostByPremiseCode!, 'constructor', {
+          enumerable: true, value: { status: 'confirmed', amountSen: 0 }
+        })
+        return request
+      } },
+      { name: '__proto__ fixed-cost key', build: () => {
+        const request = validInput()
+        Object.defineProperty(request.fixedTripCostByPremiseCode!, '__proto__', {
+          enumerable: true, value: { status: 'confirmed', amountSen: 0 }
+        })
+        return request
+      } },
+      { name: 'out-of-range fixed-cost key', build: () => {
+        const request = validInput()
+        request.fixedTripCostByPremiseCode!['9007199254740992'] = { status: 'confirmed', amountSen: 0 }
+        return request
+      } }
+    ]
+
+    for (const entry of malformed) {
+      const request = entry.build()
+      let evidence: ReturnType<typeof evaluateEvidence> | undefined
+      let normalized: ReturnType<typeof normalizeRecommendationRequest> | undefined
+      expect(() => { evidence = evaluateEvidence(makeSnapshot(), request) }, entry.name).not.toThrow()
+      expect(evidence, entry.name).toEqual({ kind: 'insufficient-evidence', primaryReason: 'input-invalid', details: [] })
+      expect(() => { normalized = normalizeRecommendationRequest(request) }, entry.name).not.toThrow()
+      expect(normalized, entry.name).toBeNull()
+    }
+  })
+
+  // Break caught: explicit map-key validation narrows the supported canonical range below the schema's inclusive maximum.
+  it('retains a maximum-safe canonical fixed-cost key', () => {
+    const request = validInput()
+    request.fixedTripCostByPremiseCode!['9007199254740991'] = { status: 'confirmed', amountSen: 0 }
+    const normalized = normalizeRecommendationRequest(request)
+
+    expect(normalized?.fixedTripCostByPremiseCode?.['9007199254740991']).toEqual({ status: 'confirmed', amountSen: 0 })
+    expect(evaluateEvidence(makeSnapshot(), request)).toMatchObject({ kind: 'ready' })
+  })
+
   it.each([
     [[{ itemCode: '10', quantityHundredths: 9900 }], true],
     [[{ itemCode: '10', quantityHundredths: 9901 }], false],

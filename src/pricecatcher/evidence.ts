@@ -63,24 +63,63 @@ const hasOwn = (value: object, key: string): boolean => Object.prototype.hasOwnP
 const defineData = (target: Record<string, unknown>, key: string, value: unknown): void => {
   Object.defineProperty(target, key, { configurable: true, enumerable: true, value, writable: true })
 }
-const readPlainDataRecord = (value: unknown): Record<string, unknown> | null => {
+interface PlainDescriptorSnapshot {
+  source: object
+  keys: PropertyKey[]
+  keySet: Set<PropertyKey>
+  descriptorCache: Map<PropertyKey, PropertyDescriptor | null>
+}
+type SnapshotField = { kind: 'missing' } | { kind: 'invalid' } | { kind: 'value'; value: unknown }
+const readPlainDescriptorSnapshot = (value: unknown): PlainDescriptorSnapshot | null => {
   try {
     if (typeof value !== 'object' || value === null || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) return null
-    const descriptors: Record<string, PropertyDescriptor> = Object.getOwnPropertyDescriptors(value)
-    const descriptorKeys = Reflect.ownKeys(descriptors)
-    if (descriptorKeys.some(key => typeof key !== 'string')) return null
+    const keys = Reflect.ownKeys(value)
+    return { source: value, keys, keySet: new Set(keys), descriptorCache: new Map() }
+  } catch { return null }
+}
+const hasOnlyAllowedSnapshotKeys = (snapshot: PlainDescriptorSnapshot, allowedKeys: readonly string[]): boolean =>
+  snapshot.keys.every(key => typeof key === 'string' && allowedKeys.includes(key))
+const readSnapshotDescriptor = (snapshot: PlainDescriptorSnapshot, key: PropertyKey): PropertyDescriptor | null => {
+  if (snapshot.descriptorCache.has(key)) return snapshot.descriptorCache.get(key) ?? null
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(snapshot.source, key) ?? null
+    snapshot.descriptorCache.set(key, descriptor)
+    return descriptor
+  } catch {
+    snapshot.descriptorCache.set(key, null)
+    return null
+  }
+}
+const materializePlainData = (snapshot: PlainDescriptorSnapshot, allowedKeys?: readonly string[]): Record<string, unknown> | null => {
+  try {
+    if (allowedKeys ? !hasOnlyAllowedSnapshotKeys(snapshot, allowedKeys) : snapshot.keys.some(key => typeof key !== 'string')) return null
     const copy: Record<string, unknown> = {}
-    for (const key of descriptorKeys as string[]) {
-      const descriptor = descriptors[key]
+    const orderedKeys = allowedKeys
+      ? allowedKeys.filter(key => snapshot.keySet.has(key))
+      : snapshot.keys as string[]
+    for (const key of orderedKeys) {
+      const descriptor = readSnapshotDescriptor(snapshot, key)
       if (!descriptor || !descriptor.enumerable || !hasOwn(descriptor, 'value')) return null
       defineData(copy, key, descriptor.value)
     }
     return copy
   } catch { return null }
 }
+const readSnapshotField = (snapshot: PlainDescriptorSnapshot, key: string): SnapshotField => {
+  if (!snapshot.keySet.has(key)) return { kind: 'missing' }
+  const descriptor = readSnapshotDescriptor(snapshot, key)
+  if (!descriptor) return { kind: 'invalid' }
+  return descriptor.enumerable && hasOwn(descriptor, 'value')
+    ? { kind: 'value', value: descriptor.value }
+    : { kind: 'invalid' }
+}
+const readPlainDataRecord = (value: unknown): Record<string, unknown> | null => {
+  const snapshot = readPlainDescriptorSnapshot(value)
+  return snapshot ? materializePlainData(snapshot) : null
+}
 const readAllowedPlainData = (value: unknown, allowedKeys: readonly string[]): Record<string, unknown> | null => {
-  const copy = readPlainDataRecord(value)
-  return copy && Object.keys(copy).every(key => allowedKeys.includes(key)) ? copy : null
+  const snapshot = readPlainDescriptorSnapshot(value)
+  return snapshot ? materializePlainData(snapshot, allowedKeys) : null
 }
 const readExactPlainData = (value: unknown, keys: readonly string[]): Record<string, unknown> | null => {
   const copy = readPlainDataRecord(value)
@@ -151,7 +190,7 @@ const freezeRecommendationInput = (input: RecommendationInput): RecommendationIn
   return Object.freeze(input)
 }
 
-const captureStrictRecommendationInput = (
+const captureStrictRecommendationInputUnchecked = (
   shell: Record<string, unknown>,
   location: Record<string, unknown>,
   rawLines: readonly unknown[]
@@ -172,6 +211,7 @@ const captureStrictRecommendationInput = (
     if (!sourceCosts) return null
     const costs: Record<string, unknown> = {}
     for (const premiseCode of Object.keys(sourceCosts)) {
+      if (!CanonicalCodeSchema.safeParse(premiseCode).success) return null
       const entry = readAllowedPlainData(sourceCosts[premiseCode], ['status', 'amountSen'])
       if (!entry) return null
       defineData(costs, premiseCode, entry)
@@ -183,41 +223,61 @@ const captureStrictRecommendationInput = (
   return strict.success ? freezeRecommendationInput(strict.data) : null
 }
 
-const commonPreflight = (snapshot: PilotSnapshotV1, value: unknown): { input?: RecommendationInput; reason?: ReasonCode; evaluatedDate?: LocalDate } => {
-  const shell = readAllowedPlainData(value, RECOMMENDATION_REQUEST_KEYS)
-  if (!shell) return { reason: 'input-invalid' }
-  if (!ISOInstantSchema.safeParse(shell.evaluatedAt).success) return { reason: 'input-invalid' }
-  const evaluatedAt = shell.evaluatedAt as ISOInstant
+const captureStrictRecommendationInput = (
+  shell: Record<string, unknown>,
+  location: Record<string, unknown>,
+  rawLines: readonly unknown[]
+): RecommendationInput | null => {
+  try { return captureStrictRecommendationInputUnchecked(shell, location, rawLines) } catch { return null }
+}
+
+const commonPreflightUnchecked = (snapshot: PilotSnapshotV1, value: unknown): { input?: RecommendationInput; reason?: ReasonCode; evaluatedDate?: LocalDate } => {
+  const snapshotFields = readPlainDescriptorSnapshot(value)
+  if (!snapshotFields || !hasOnlyAllowedSnapshotKeys(snapshotFields, RECOMMENDATION_REQUEST_KEYS)) return { reason: 'input-invalid' }
+  const evaluatedAtField = readSnapshotField(snapshotFields, 'evaluatedAt')
+  if (evaluatedAtField.kind !== 'value' || !ISOInstantSchema.safeParse(evaluatedAtField.value).success) return { reason: 'input-invalid' }
+  const evaluatedAt = evaluatedAtField.value as ISOInstant
   const evaluatedDate = malaysiaDateAt(evaluatedAt)
   if (new Date(evaluatedAt).getTime() < new Date(snapshot.compiledAt).getTime() - 300_000 || evaluatedDate < snapshot.dataAsOfDate) return { reason: 'clock-invalid' }
   if (snapshot.dataAsOfDate !== evaluatedDate && snapshot.dataAsOfDate !== addLocalDates(evaluatedDate, -1)) return { reason: 'snapshot-stale' }
-  if (!hasOwn(shell, 'location') || shell.location === undefined) return { reason: 'location-missing' }
-  const location = readExactPlainData(shell.location, ['latitude', 'longitude', 'accuracyMetres'])
+  const locationField = readSnapshotField(snapshotFields, 'location')
+  if (locationField.kind === 'missing' || (locationField.kind === 'value' && locationField.value === undefined)) return { reason: 'location-missing' }
+  if (locationField.kind === 'invalid') return { reason: 'input-invalid' }
+  const location = readExactPlainData(locationField.value, ['latitude', 'longitude', 'accuracyMetres'])
   if (!location) return { reason: 'input-invalid' }
   const { latitude, longitude, accuracyMetres } = location
   if (![latitude, longitude, accuracyMetres].every(item => typeof item === 'number' && Number.isFinite(item)) ||
       (latitude as number) < -90 || (latitude as number) > 90 || (longitude as number) < -180 || (longitude as number) > 180 || (accuracyMetres as number) < 0) return { reason: 'input-invalid' }
   if ((accuracyMetres as number) > 100) return { reason: 'location-imprecise' }
-  if (!hasOwn(shell, 'lines')) return { reason: 'basket-empty' }
-  try { if (!Array.isArray(shell.lines)) return { reason: 'basket-empty' } } catch { return { reason: 'input-invalid' } }
-  const rawLines = readDensePlainArray(shell.lines, maximumSatisfiableRawLineCount(snapshot.items.length))
+  const linesField = readSnapshotField(snapshotFields, 'lines')
+  if (linesField.kind === 'missing') return { reason: 'basket-empty' }
+  if (linesField.kind === 'invalid') return { reason: 'input-invalid' }
+  try { if (!Array.isArray(linesField.value)) return { reason: 'basket-empty' } } catch { return { reason: 'input-invalid' } }
+  const rawLines = readDensePlainArray(linesField.value, maximumSatisfiableRawLineCount(snapshot.items.length))
   if (!rawLines) return { reason: 'input-invalid' }
   if (rawLines.length === 0) return { reason: 'basket-empty' }
+  const shell = materializePlainData(snapshotFields, RECOMMENDATION_REQUEST_KEYS)
+  if (!shell) return { reason: 'input-invalid' }
   const input = captureStrictRecommendationInput(shell, location, rawLines)
   return input ? { input, evaluatedDate } : { reason: 'input-invalid' }
 }
 
+const commonPreflight = (snapshot: PilotSnapshotV1, value: unknown): { input?: RecommendationInput; reason?: ReasonCode; evaluatedDate?: LocalDate } => {
+  try { return commonPreflightUnchecked(snapshot, value) } catch { return { reason: 'input-invalid' } }
+}
+
 /** Normalizes the public request shell without throwing public refusal reasons. */
 export function normalizeRecommendationRequest(request: unknown): RecommendationInput | null {
-  const shell = readAllowedPlainData(request, RECOMMENDATION_REQUEST_KEYS)
-  if (!shell) return null
-  const location = readExactPlainData(shell.location, ['latitude', 'longitude', 'accuracyMetres'])
-  if (!location) return null
-  let isArray: boolean
-  try { isArray = Array.isArray(shell.lines) } catch { return null }
-  if (!isArray) return null
-  const rawLines = readDensePlainArray(shell.lines, Number.MAX_SAFE_INTEGER)
-  return rawLines ? captureStrictRecommendationInput(shell, location, rawLines) : null
+  try {
+    const snapshotFields = readPlainDescriptorSnapshot(request)
+    if (!snapshotFields || !hasOnlyAllowedSnapshotKeys(snapshotFields, RECOMMENDATION_REQUEST_KEYS)) return null
+    const shell = materializePlainData(snapshotFields, RECOMMENDATION_REQUEST_KEYS)
+    if (!shell) return null
+    const location = readExactPlainData(shell.location, ['latitude', 'longitude', 'accuracyMetres'])
+    if (!location || !Array.isArray(shell.lines)) return null
+    const rawLines = readDensePlainArray(shell.lines, Number.MAX_SAFE_INTEGER)
+    return rawLines ? captureStrictRecommendationInput(shell, location, rawLines) : null
+  } catch { return null }
 }
 
 export function mergeBasketLines(snapshot: PilotSnapshotV1, lines: readonly RecommendationInput['lines'][number][]): RecommendationInput['lines'] {

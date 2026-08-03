@@ -648,6 +648,76 @@ describe('PriceCatcher recommendation selection', () => {
     }
   })
 
+  // Break caught: eager top-level descriptor validation overwrites earlier recommendation refusal reasons.
+  it('preserves recommendation refusal precedence over later top-level accessors', () => {
+    const cases: Array<{ name: string; request: Record<string, unknown>; keys: string[]; primaryReason: string }> = []
+    cases.push({
+      name: 'invalid clock',
+      request: goldenInput({ evaluatedAt: '2026-08-03T02:54:59.000Z' }) as unknown as Record<string, unknown>,
+      keys: ['mode'], primaryReason: 'clock-invalid'
+    })
+    const missingLocation = goldenInput() as unknown as Record<string, unknown>
+    delete missingLocation.location
+    cases.push({ name: 'missing location', request: missingLocation, keys: ['lines', 'mode'], primaryReason: 'location-missing' })
+    cases.push({
+      name: 'imprecise location',
+      request: goldenInput({ location: { latitude: 0, longitude: 0, accuracyMetres: 101 } }) as unknown as Record<string, unknown>,
+      keys: ['mode'], primaryReason: 'location-imprecise'
+    })
+    cases.push({
+      name: 'empty basket', request: goldenInput({ lines: [] }) as unknown as Record<string, unknown>,
+      keys: ['fixedTripCostByPremiseCode'], primaryReason: 'basket-empty'
+    })
+
+    for (const entry of cases) {
+      let reads = 0
+      for (const key of entry.keys) Object.defineProperty(entry.request, key, {
+        enumerable: true,
+        get: () => { reads++; throw new Error(`${entry.name} later getter must not run`) }
+      })
+      expect(recommend(goldenSnapshot(), entry.request), entry.name).toEqual({
+        kind: 'insufficient-evidence', primaryReason: entry.primaryReason, details: []
+      })
+      expect(reads, entry.name).toBe(0)
+    }
+  })
+
+  // Break caught: malformed canonical values throw or an own __proto__ fixed-cost entry is silently ignored.
+  it('returns the exact invalid result for malformed code boundaries', () => {
+    const malformed: Array<{ name: string; build: () => unknown }> = [
+      { name: 'usual premise', build: () => ({ ...goldenInput(), usualPremiseCode: 'abc' }) },
+      { name: 'basket line', build: () => ({ ...goldenInput(), lines: [{ itemCode: '1.2', quantityHundredths: 100 }] }) },
+      ...(['constructor', '__proto__'] as const).map(key => ({
+        name: `${key} fixed-cost key`,
+        build: () => {
+          const request = goldenInput()
+          Object.defineProperty(request.fixedTripCostByPremiseCode!, key, {
+            enumerable: true, value: { status: 'confirmed', amountSen: 0 }
+          })
+          return request
+        }
+      })),
+      { name: 'out-of-range fixed-cost key', build: () => {
+        const request = goldenInput()
+        request.fixedTripCostByPremiseCode!['9007199254740992'] = { status: 'confirmed', amountSen: 0 }
+        return request
+      } }
+    ]
+
+    for (const entry of malformed) {
+      let result: ReturnType<typeof recommend> | undefined
+      expect(() => { result = recommend(goldenSnapshot(), entry.build()) }, entry.name).not.toThrow()
+      expect(result, entry.name).toEqual(INPUT_INVALID_RESULT)
+    }
+  })
+
+  // Break caught: the inclusive maximum canonical fixed-cost key is rejected with the one-past-maximum case.
+  it('keeps recommendation behavior with a maximum-safe canonical fixed-cost key', () => {
+    const request = goldenInput()
+    request.fixedTripCostByPremiseCode!['9007199254740991'] = { status: 'confirmed', amountSen: 0 }
+    expect(recommend(goldenSnapshot(), request)).toMatchObject({ kind: 'switch' })
+  })
+
   // Break caught: private arithmetic/helpers leak from the supported root API or a supported contract export disappears.
   it('exposes exactly contracts and the supported domain entrypoints', () => {
     expect(Object.keys(publicApi).sort()).toEqual([
