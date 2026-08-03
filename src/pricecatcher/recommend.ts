@@ -3,7 +3,7 @@ import {
   checkedAdd, checkedSubtract, checkedSum, lineAllowanceSen, lineTotalSen, unitAllowanceSen
 } from './money'
 import { drivingTripCost } from './travel'
-import { evaluateEvidence, normalizeRecommendationRequest, type CompletePremiseEvidence } from './evidence'
+import { evaluateEvidenceWithInput, type CompletePremiseEvidence } from './evidence'
 import {
   RecommendationResultSchema,
   type ComparedLineV1,
@@ -161,9 +161,10 @@ const compareConservativeSaving = (left: CandidateTripCalculation, right: Candid
 }
 
 export function recommend(snapshot: PilotSnapshotV1, request: unknown): RecommendationResult {
-  const evidence = evaluateEvidence(snapshot, request)
+  const evaluated = evaluateEvidenceWithInput(snapshot, request)
+  const evidence = evaluated.evidence
   if (evidence.kind === 'insufficient-evidence') return RecommendationResultSchema.parse(evidence)
-  const input = normalizeRecommendationRequest(request)
+  const input = evaluated.input
   if (!input) return invalidResult()
 
   try {

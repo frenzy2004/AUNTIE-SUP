@@ -101,7 +101,14 @@ describe('evidence evaluation', () => {
   })
 
   it('normalizes only exact request fields before strict calculation parsing', () => {
-    expect(normalizeRecommendationRequest(validInput())).toEqual(validInput())
+    const normalized = normalizeRecommendationRequest(validInput())
+    expect(normalized).toEqual(validInput())
+    expect(Object.isFrozen(normalized)).toBe(true)
+    expect(Object.isFrozen(normalized!.location)).toBe(true)
+    expect(Object.isFrozen(normalized!.lines)).toBe(true)
+    expect(normalized!.lines.every(Object.isFrozen)).toBe(true)
+    expect(Object.isFrozen(normalized!.fixedTripCostByPremiseCode)).toBe(true)
+    expect(Object.values(normalized!.fixedTripCostByPremiseCode!).every(Object.isFrozen)).toBe(true)
   })
 
   // Break caught: the five minute grace is implemented as a strict or rounded boundary.
@@ -188,6 +195,67 @@ describe('evidence evaluation', () => {
         '2': { status: 'unknown' }
       }
     }))).toMatchObject({ kind: 'ready', comparisonOnlyReasons: ['fixed-trip-cost-unknown'] })
+  })
+
+  // Break caught: the direct evidence boundary invokes or trusts a changing raw request accessor.
+  it('rejects a changing recommendation accessor without invoking it', () => {
+    const request = { ...validInput() } as Record<string, unknown>
+    let reads = 0
+    Object.defineProperty(request, 'basketScope', {
+      enumerable: true,
+      get: () => ++reads === 1 ? 'complete-trip' : 'selected-items-only'
+    })
+    let result: ReturnType<typeof evaluateEvidence> | undefined
+
+    expect(() => { result = evaluateEvidence(makeSnapshot(), request) }).not.toThrow()
+    expect(result).toEqual({ kind: 'insufficient-evidence', primaryReason: 'input-invalid', details: [] })
+    expect(reads).toBe(0)
+  })
+
+  // Break caught: nested accessors and reflection failures escape the direct evidence boundary.
+  it('fails closed without invoking hostile nested recommendation fields', () => {
+    const nested = validInput()
+    let nestedReads = 0
+    Object.defineProperty(nested.fixedTripCostByPremiseCode!['2']!, 'amountSen', {
+      enumerable: true,
+      get: () => { nestedReads++; throw new Error('fixed-cost getter must not run') }
+    })
+    const trapped = new Proxy(validInput(), { ownKeys: () => { throw new Error('ownKeys') } })
+
+    expect(() => evaluateEvidence(makeSnapshot(), nested)).not.toThrow()
+    expect(evaluateEvidence(makeSnapshot(), nested)).toEqual({ kind: 'insufficient-evidence', primaryReason: 'input-invalid', details: [] })
+    expect(nestedReads).toBe(0)
+    expect(() => evaluateEvidence(makeSnapshot(), trapped)).not.toThrow()
+    expect(evaluateEvidence(makeSnapshot(), trapped)).toEqual({ kind: 'insufficient-evidence', primaryReason: 'input-invalid', details: [] })
+  })
+
+  // Break caught: direct evidence normalization performs raw gets or multiple top-level descriptor snapshots.
+  it('uses one descriptor snapshot and no raw gets at the direct evidence boundary', () => {
+    const target = validInput()
+    let ownKeysCalls = 0
+    let getCalls = 0
+    const request = new Proxy(target, {
+      ownKeys: object => { ownKeysCalls++; return Reflect.ownKeys(object) },
+      getOwnPropertyDescriptor: (object, key) => Reflect.getOwnPropertyDescriptor(object, key),
+      get: () => { getCalls++; throw new Error('raw get must not run') }
+    })
+
+    expect(evaluateEvidence(makeSnapshot(), request)).toMatchObject({ kind: 'ready' })
+    expect(ownKeysCalls).toBe(1)
+    expect(getCalls).toBe(0)
+  })
+
+  // Break caught: eager nested stabilization overwrites the existing clock refusal precedence.
+  it('does not touch hostile nested fields after an earlier clock refusal', () => {
+    const request = validInput({ evaluatedAt: '2026-08-03T02:54:59.000Z' })
+    let reads = 0
+    Object.defineProperty(request.location, 'latitude', {
+      enumerable: true,
+      get: () => { reads++; throw new Error('location getter must not run') }
+    })
+
+    expect(evaluateEvidence(makeSnapshot(), request)).toEqual({ kind: 'insufficient-evidence', primaryReason: 'clock-invalid', details: [] })
+    expect(reads).toBe(0)
   })
 
   it.each([

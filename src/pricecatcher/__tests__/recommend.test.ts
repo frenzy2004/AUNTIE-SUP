@@ -11,6 +11,7 @@ import {
 
 const OBSERVED_DATE = '2026-08-02' as const
 const PRIOR_DATE = '2026-08-01' as const
+const INPUT_INVALID_RESULT = { kind: 'insufficient-evidence', primaryReason: 'input-invalid', details: [] } as const
 
 const snapshotWithPrices = (usualPriceSen: number, candidatePriceSen: number): PilotSnapshotV1 => ({
   ...goldenSnapshot(),
@@ -486,6 +487,165 @@ describe('PriceCatcher recommendation selection', () => {
     ]
     for (const result of results) expect(RecommendationResultSchema.parse(result)).toEqual(result)
     expect(results.map(result => result.kind)).toEqual(['switch', 'no-clear-advantage', 'comparison-only', 'insufficient-evidence'])
+  })
+
+  // Break caught: evidence and trip-assumption decoding observe different values from one raw accessor.
+  it('rejects a changing top-level accessor without invoking it', () => {
+    const request = { ...goldenInput() } as Record<string, unknown>
+    let reads = 0
+    Object.defineProperty(request, 'basketScope', {
+      enumerable: true,
+      get: () => ++reads === 1 ? 'complete-trip' : 'selected-items-only'
+    })
+    let result: ReturnType<typeof recommend> | undefined
+
+    expect(() => { result = recommend(goldenSnapshot(), request) }).not.toThrow()
+    expect(result).toEqual(INPUT_INVALID_RESULT)
+    expect(reads).toBe(0)
+  })
+
+  // Break caught: a valid first decode is followed by a throwing second decode of the same raw field.
+  it('rejects a getter that would throw on a second read without invoking it', () => {
+    const request = { ...goldenInput() } as Record<string, unknown>
+    let reads = 0
+    Object.defineProperty(request, 'basketScope', {
+      enumerable: true,
+      get: () => {
+        reads++
+        if (reads === 1) return 'complete-trip'
+        throw new Error('raw request was decoded twice')
+      }
+    })
+    let result: ReturnType<typeof recommend> | undefined
+
+    expect(() => { result = recommend(goldenSnapshot(), request) }).not.toThrow()
+    expect(result).toEqual(INPUT_INVALID_RESULT)
+    expect(reads).toBe(0)
+  })
+
+  // Break caught: a throwing accessor escapes before recommendation arithmetic enters its fail-closed block.
+  it('rejects throwing accessors at every nested request boundary without invoking them', () => {
+    const cases: Array<{ name: string; request: unknown; reads: () => number }> = []
+    const add = (name: string, build: (throwing: () => never) => unknown) => {
+      let reads = 0
+      cases.push({
+        name,
+        request: build(() => { reads++; throw new Error(`${name} getter must not run`) }),
+        reads: () => reads
+      })
+    }
+    add('top-level', throwing => {
+      const request = { ...goldenInput() }
+      Object.defineProperty(request, 'mode', { enumerable: true, get: throwing })
+      return request
+    })
+    add('location', throwing => {
+      const request = goldenInput()
+      Object.defineProperty(request.location, 'latitude', { enumerable: true, get: throwing })
+      return request
+    })
+    add('lines array', throwing => {
+      const request = goldenInput()
+      Object.defineProperty(request.lines, '0', { enumerable: true, get: throwing })
+      return request
+    })
+    add('line record', throwing => {
+      const request = goldenInput()
+      Object.defineProperty(request.lines[0]!, 'quantityHundredths', { enumerable: true, get: throwing })
+      return request
+    })
+    add('fixed-cost map', throwing => {
+      const request = goldenInput()
+      Object.defineProperty(request.fixedTripCostByPremiseCode!, '2', { enumerable: true, get: throwing })
+      return request
+    })
+    add('fixed-cost entry', throwing => {
+      const request = goldenInput()
+      Object.defineProperty(request.fixedTripCostByPremiseCode!['2']!, 'amountSen', { enumerable: true, get: throwing })
+      return request
+    })
+
+    for (const entry of cases) {
+      let result: ReturnType<typeof recommend> | undefined
+      expect(() => { result = recommend(goldenSnapshot(), entry.request) }, entry.name).not.toThrow()
+      expect(result, entry.name).toEqual(INPUT_INVALID_RESULT)
+      expect(entry.reads(), entry.name).toBe(0)
+    }
+  })
+
+  // Break caught: a stable descriptor Proxy is read through raw `get` operations or reflected more than once.
+  it('uses one descriptor snapshot and no raw gets for a stable request Proxy', () => {
+    const target = goldenInput()
+    let ownKeysCalls = 0
+    let getCalls = 0
+    const descriptorCalls = new Map<PropertyKey, number>()
+    const request = new Proxy(target, {
+      ownKeys: object => { ownKeysCalls++; return Reflect.ownKeys(object) },
+      getOwnPropertyDescriptor: (object, key) => {
+        descriptorCalls.set(key, (descriptorCalls.get(key) ?? 0) + 1)
+        return Reflect.getOwnPropertyDescriptor(object, key)
+      },
+      get: () => { getCalls++; throw new Error('raw get must not run') }
+    })
+    let result: ReturnType<typeof recommend> | undefined
+
+    expect(() => { result = recommend(goldenSnapshot(), request) }).not.toThrow()
+    expect(result).toMatchObject({ kind: 'switch' })
+    expect(ownKeysCalls).toBe(1)
+    expect(getCalls).toBe(0)
+    expect([...descriptorCalls.values()]).toEqual(Array.from({ length: Reflect.ownKeys(target).length }, () => 1))
+  })
+
+  // Break caught: reflection failures or revoked Proxies escape instead of returning the exact invalid result.
+  it.each([
+    ['ownKeys trap', () => new Proxy(goldenInput(), { ownKeys: () => { throw new Error('ownKeys') } })],
+    ['descriptor trap', () => new Proxy(goldenInput(), { getOwnPropertyDescriptor: () => { throw new Error('descriptor') } })],
+    ['prototype trap', () => new Proxy(goldenInput(), { getPrototypeOf: () => { throw new Error('prototype') } })],
+    ['revoked Proxy', () => { const pair = Proxy.revocable(goldenInput(), {}); pair.revoke(); return pair.proxy }]
+  ] as const)('fails closed for a request %s', (_name, build) => {
+    let result: ReturnType<typeof recommend> | undefined
+    expect(() => { result = recommend(goldenSnapshot(), build()) }).not.toThrow()
+    expect(result).toEqual(INPUT_INVALID_RESULT)
+  })
+
+  // Break caught: eager deep capture lets a later hostile field override an earlier semantic refusal.
+  it('preserves refusal precedence without touching later hostile fields', () => {
+    const scenarios: Array<{ request: unknown; result: unknown; reads: () => number }> = []
+    const add = (request: ReturnType<typeof goldenInput>, mutate: (throwing: () => never) => void, result: unknown) => {
+      let reads = 0
+      mutate(() => { reads++; throw new Error('later getter must not run') })
+      scenarios.push({ request, result, reads: () => reads })
+    }
+
+    const clock = goldenInput({ evaluatedAt: '2026-08-03T02:54:59.000Z' })
+    add(clock, throwing => Object.defineProperty(clock.location, 'latitude', { enumerable: true, get: throwing }),
+      { kind: 'insufficient-evidence', primaryReason: 'clock-invalid', details: [] })
+
+    const missingLocation = goldenInput() as Record<string, unknown>
+    delete missingLocation.location
+    let missingReads = 0
+    Object.defineProperty((missingLocation.lines as unknown[]), '0', {
+      enumerable: true,
+      get: () => { missingReads++; throw new Error('line getter must not run') }
+    })
+    scenarios.push({
+      request: missingLocation,
+      result: { kind: 'insufficient-evidence', primaryReason: 'location-missing', details: [] },
+      reads: () => missingReads
+    })
+
+    const imprecise = goldenInput({ location: { latitude: 0, longitude: 0, accuracyMetres: 101 } })
+    add(imprecise, throwing => Object.defineProperty(imprecise.lines[0]!, 'itemCode', { enumerable: true, get: throwing }),
+      { kind: 'insufficient-evidence', primaryReason: 'location-imprecise', details: [] })
+
+    const emptyBasket = goldenInput({ lines: [] })
+    add(emptyBasket, throwing => Object.defineProperty(emptyBasket.fixedTripCostByPremiseCode!['2']!, 'amountSen', { enumerable: true, get: throwing }),
+      { kind: 'insufficient-evidence', primaryReason: 'basket-empty', details: [] })
+
+    for (const scenario of scenarios) {
+      expect(recommend(goldenSnapshot(), scenario.request)).toEqual(scenario.result)
+      expect(scenario.reads()).toBe(0)
+    }
   })
 
   // Break caught: private arithmetic/helpers leak from the supported root API or a supported contract export disappears.

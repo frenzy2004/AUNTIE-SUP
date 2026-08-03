@@ -4,7 +4,7 @@ import { canonicalizeCode, compareCanonicalCodes } from './ids'
 import { checkedAdd } from './money'
 import { CanonicalCodeSchema, ISOInstantSchema, type ISOInstant, type LocalDate, type ReasonCode, type Sen } from './contracts/common'
 import {
-  RecommendationInputSchema, RecommendationRequestSchema,
+  RecommendationInputSchema,
   type ExclusionCounts, type RecommendationInput, type RecommendationRequest, type ReasonDetail
 } from './contracts/recommendation'
 import type { EvidenceCellV1, ObservationEvidenceV1, PilotSnapshotV1 } from './contracts/snapshot'
@@ -12,6 +12,10 @@ import type { EvidenceCellV1, ObservationEvidenceV1, PilotSnapshotV1 } from './c
 const FAILURE_ORDER = ['anomalous', 'insufficient-reference', 'stale', 'missing', 'date-mismatch'] as const
 const EXCLUSION_ORDER = ['outside-radius', ...FAILURE_ORDER] as const
 const MAX_MERGED_QUANTITY_HUNDREDTHS = 9_900
+const RECOMMENDATION_REQUEST_KEYS = [
+  'evaluatedAt', 'location', 'usualPremiseCode', 'basketScope', 'lines', 'mode',
+  'fuelEfficiencyDeciKmPerL', 'fuelPriceSenPerL', 'fixedTripCostByPremiseCode', 'worthwhileThresholdSen'
+] as const
 type FailureBucket = typeof FAILURE_ORDER[number]
 type ComparisonOnlyReason = 'selected-items-only' | 'walking-route-unverified' | 'fixed-trip-cost-unknown' | 'publication-not-consumer-ready'
 
@@ -55,24 +59,32 @@ export type EvidenceEvaluation =
 type SelectedObservation = ObservationEvidenceV1
 type CandidateAssessment = { complete?: CompletePremiseEvidence; bucket?: FailureBucket; details: ReasonDetail[] }
 
-const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value)
 const hasOwn = (value: object, key: string): boolean => Object.prototype.hasOwnProperty.call(value, key)
-const readExactPlainData = (value: unknown, keys: readonly string[]): Record<string, unknown> | null => {
+const defineData = (target: Record<string, unknown>, key: string, value: unknown): void => {
+  Object.defineProperty(target, key, { configurable: true, enumerable: true, value, writable: true })
+}
+const readPlainDataRecord = (value: unknown): Record<string, unknown> | null => {
   try {
-    if (typeof value !== 'object' || value === null || Array.isArray(value)) return null
-    const prototype = Object.getPrototypeOf(value)
-    if (prototype !== Object.prototype) return null
+    if (typeof value !== 'object' || value === null || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) return null
     const descriptors: Record<string, PropertyDescriptor> = Object.getOwnPropertyDescriptors(value)
     const descriptorKeys = Reflect.ownKeys(descriptors)
-    if (descriptorKeys.length !== keys.length || descriptorKeys.some(key => typeof key !== 'string') || !keys.every(key => hasOwn(descriptors, key))) return null
+    if (descriptorKeys.some(key => typeof key !== 'string')) return null
     const copy: Record<string, unknown> = {}
-    for (const key of keys) {
+    for (const key of descriptorKeys as string[]) {
       const descriptor = descriptors[key]
       if (!descriptor || !descriptor.enumerable || !hasOwn(descriptor, 'value')) return null
-      copy[key] = descriptor.value
+      defineData(copy, key, descriptor.value)
     }
     return copy
   } catch { return null }
+}
+const readAllowedPlainData = (value: unknown, allowedKeys: readonly string[]): Record<string, unknown> | null => {
+  const copy = readPlainDataRecord(value)
+  return copy && Object.keys(copy).every(key => allowedKeys.includes(key)) ? copy : null
+}
+const readExactPlainData = (value: unknown, keys: readonly string[]): Record<string, unknown> | null => {
+  const copy = readPlainDataRecord(value)
+  return copy && Object.keys(copy).length === keys.length && keys.every(key => hasOwn(copy, key)) ? copy : null
 }
 const maximumSatisfiableRawLineCount = (itemCount: number): number =>
   itemCount > Math.floor(Number.MAX_SAFE_INTEGER / MAX_MERGED_QUANTITY_HUNDREDTHS)
@@ -128,31 +140,84 @@ const emptyPreflight = (): PreflightEvidence => ({ baselineReady: false, complet
 
 const withinFreshTargetDates = (date: LocalDate, evaluatedDate: LocalDate): boolean => date === evaluatedDate || date === addLocalDates(evaluatedDate, -1)
 
+const freezeRecommendationInput = (input: RecommendationInput): RecommendationInput => {
+  Object.freeze(input.location)
+  for (const line of input.lines) Object.freeze(line)
+  Object.freeze(input.lines)
+  if (input.fixedTripCostByPremiseCode) {
+    for (const entry of Object.values(input.fixedTripCostByPremiseCode)) Object.freeze(entry)
+    Object.freeze(input.fixedTripCostByPremiseCode)
+  }
+  return Object.freeze(input)
+}
+
+const captureStrictRecommendationInput = (
+  shell: Record<string, unknown>,
+  location: Record<string, unknown>,
+  rawLines: readonly unknown[]
+): RecommendationInput | null => {
+  const lines: Record<string, unknown>[] = []
+  for (const rawLine of rawLines) {
+    const line = readExactPlainData(rawLine, ['itemCode', 'quantityHundredths'])
+    if (!line) return null
+    lines.push(line)
+  }
+
+  const captured: Record<string, unknown> = {}
+  for (const key of Object.keys(shell)) defineData(captured, key, shell[key])
+  captured.location = location
+  captured.lines = lines
+  if (hasOwn(shell, 'fixedTripCostByPremiseCode') && shell.fixedTripCostByPremiseCode !== undefined) {
+    const sourceCosts = readPlainDataRecord(shell.fixedTripCostByPremiseCode)
+    if (!sourceCosts) return null
+    const costs: Record<string, unknown> = {}
+    for (const premiseCode of Object.keys(sourceCosts)) {
+      const entry = readAllowedPlainData(sourceCosts[premiseCode], ['status', 'amountSen'])
+      if (!entry) return null
+      defineData(costs, premiseCode, entry)
+    }
+    captured.fixedTripCostByPremiseCode = costs
+  }
+
+  const strict = RecommendationInputSchema.safeParse(captured)
+  return strict.success ? freezeRecommendationInput(strict.data) : null
+}
+
 const commonPreflight = (snapshot: PilotSnapshotV1, value: unknown): { input?: RecommendationInput; reason?: ReasonCode; evaluatedDate?: LocalDate } => {
-  const shell = RecommendationRequestSchema.safeParse(value)
-  if (!shell.success || !isRecord(value)) return { reason: 'input-invalid' }
-  if (!ISOInstantSchema.safeParse(shell.data.evaluatedAt).success) return { reason: 'input-invalid' }
-  const evaluatedAt = shell.data.evaluatedAt as ISOInstant
+  const shell = readAllowedPlainData(value, RECOMMENDATION_REQUEST_KEYS)
+  if (!shell) return { reason: 'input-invalid' }
+  if (!ISOInstantSchema.safeParse(shell.evaluatedAt).success) return { reason: 'input-invalid' }
+  const evaluatedAt = shell.evaluatedAt as ISOInstant
   const evaluatedDate = malaysiaDateAt(evaluatedAt)
   if (new Date(evaluatedAt).getTime() < new Date(snapshot.compiledAt).getTime() - 300_000 || evaluatedDate < snapshot.dataAsOfDate) return { reason: 'clock-invalid' }
   if (snapshot.dataAsOfDate !== evaluatedDate && snapshot.dataAsOfDate !== addLocalDates(evaluatedDate, -1)) return { reason: 'snapshot-stale' }
-  if (!hasOwn(shell.data, 'location') || shell.data.location === undefined) return { reason: 'location-missing' }
-  const location = shell.data.location
-  if (!isRecord(location) || Object.keys(location).length !== 3 || !['latitude', 'longitude', 'accuracyMetres'].every(key => hasOwn(location, key))) return { reason: 'input-invalid' }
+  if (!hasOwn(shell, 'location') || shell.location === undefined) return { reason: 'location-missing' }
+  const location = readExactPlainData(shell.location, ['latitude', 'longitude', 'accuracyMetres'])
+  if (!location) return { reason: 'input-invalid' }
   const { latitude, longitude, accuracyMetres } = location
   if (![latitude, longitude, accuracyMetres].every(item => typeof item === 'number' && Number.isFinite(item)) ||
       (latitude as number) < -90 || (latitude as number) > 90 || (longitude as number) < -180 || (longitude as number) > 180 || (accuracyMetres as number) < 0) return { reason: 'input-invalid' }
   if ((accuracyMetres as number) > 100) return { reason: 'location-imprecise' }
-  if (!hasOwn(shell.data, 'lines') || !Array.isArray(shell.data.lines) || shell.data.lines.length === 0) return { reason: 'basket-empty' }
-  const strict = RecommendationInputSchema.safeParse(shell.data)
-  if (!strict.success) return { reason: 'input-invalid' }
-  return { input: strict.data, evaluatedDate }
+  if (!hasOwn(shell, 'lines')) return { reason: 'basket-empty' }
+  try { if (!Array.isArray(shell.lines)) return { reason: 'basket-empty' } } catch { return { reason: 'input-invalid' } }
+  const rawLines = readDensePlainArray(shell.lines, maximumSatisfiableRawLineCount(snapshot.items.length))
+  if (!rawLines) return { reason: 'input-invalid' }
+  if (rawLines.length === 0) return { reason: 'basket-empty' }
+  const input = captureStrictRecommendationInput(shell, location, rawLines)
+  return input ? { input, evaluatedDate } : { reason: 'input-invalid' }
 }
 
 /** Normalizes the public request shell without throwing public refusal reasons. */
 export function normalizeRecommendationRequest(request: unknown): RecommendationInput | null {
-  const shell = RecommendationRequestSchema.safeParse(request)
-  return shell.success ? (RecommendationInputSchema.safeParse(shell.data).data ?? null) : null
+  const shell = readAllowedPlainData(request, RECOMMENDATION_REQUEST_KEYS)
+  if (!shell) return null
+  const location = readExactPlainData(shell.location, ['latitude', 'longitude', 'accuracyMetres'])
+  if (!location) return null
+  let isArray: boolean
+  try { isArray = Array.isArray(shell.lines) } catch { return null }
+  if (!isArray) return null
+  const rawLines = readDensePlainArray(shell.lines, Number.MAX_SAFE_INTEGER)
+  return rawLines ? captureStrictRecommendationInput(shell, location, rawLines) : null
 }
 
 export function mergeBasketLines(snapshot: PilotSnapshotV1, lines: readonly RecommendationInput['lines'][number][]): RecommendationInput['lines'] {
@@ -348,23 +413,35 @@ const comparisonOnlyReasons = (snapshot: PilotSnapshotV1, input: RecommendationI
   return reasons
 }
 
-export function evaluateEvidence(snapshot: PilotSnapshotV1, request: RecommendationRequest | RecommendationInput | unknown): EvidenceEvaluation {
-  const common = commonPreflight(snapshot, request)
-  if (!common.input || !common.evaluatedDate) return { kind: 'insufficient-evidence', primaryReason: common.reason!, details: [] }
-  const input = common.input
+const evaluateNormalizedEvidence = (snapshot: PilotSnapshotV1, input: RecommendationInput, evaluatedDate: LocalDate): EvidenceEvaluation => {
   if (!snapshot.premises.some(premise => premise.code === input.usualPremiseCode)) return { kind: 'insufficient-evidence', primaryReason: 'usual-premise-not-in-pilot', details: [] }
   if (input.lines.some(line => !snapshot.items.some(item => item.code === line.itemCode))) return { kind: 'insufficient-evidence', primaryReason: 'item-not-in-pilot', details: [] }
   let lines: RecommendationInput['lines']
   try { lines = mergeBasketLines(snapshot, input.lines) } catch { return { kind: 'insufficient-evidence', primaryReason: 'input-invalid', details: [] } }
   const evidenceInput: EvidencePreflightInput = { evaluatedAt: input.evaluatedAt, location: input.location, usualPremiseCode: input.usualPremiseCode, lines, mode: input.mode }
-  const enumerated = enumerateCandidates(snapshot, evidenceInput, common.evaluatedDate, input.mode === 'walk' ? 2000 : 5000)
+  const enumerated = enumerateCandidates(snapshot, evidenceInput, evaluatedDate, input.mode === 'walk' ? 2000 : 5000)
   if (!enumerated.usual) return { kind: 'insufficient-evidence', primaryReason: reasonFromBaselineDetails(enumerated.baselineDetails), details: enumerated.baselineDetails }
   if (enumerated.exclusions!.inRadiusCandidateCount === 0) return { kind: 'insufficient-evidence', primaryReason: 'no-candidate-in-radius', details: [], exclusions: enumerated.exclusions }
   if (enumerated.candidates.length === 0) return { kind: 'insufficient-evidence', primaryReason: candidateReason(enumerated.exclusions!), details: enumerated.details, exclusions: enumerated.exclusions }
-  const reasons = comparisonOnlyReasons(snapshot, input, common.evaluatedDate, [enumerated.usual, ...enumerated.candidates])
+  const reasons = comparisonOnlyReasons(snapshot, input, evaluatedDate, [enumerated.usual, ...enumerated.candidates])
   if (reasons.length === 0 && (input.fuelPriceSenPerL === undefined || input.worthwhileThresholdSen === undefined ||
       !input.fixedTripCostByPremiseCode || ![enumerated.usual, ...enumerated.candidates].every(candidate => input.fixedTripCostByPremiseCode![candidate.premiseCode]))) {
     return { kind: 'insufficient-evidence', primaryReason: 'input-invalid', details: [] }
   }
-  return { kind: 'ready', evaluatedDate: common.evaluatedDate, usual: enumerated.usual, candidates: enumerated.candidates, exclusions: enumerated.exclusions!, comparisonOnlyReasons: reasons }
+  return { kind: 'ready', evaluatedDate, usual: enumerated.usual, candidates: enumerated.candidates, exclusions: enumerated.exclusions!, comparisonOnlyReasons: reasons }
+}
+
+export function evaluateEvidenceWithInput(
+  snapshot: PilotSnapshotV1,
+  request: RecommendationRequest | RecommendationInput | unknown
+): { evidence: EvidenceEvaluation; input: RecommendationInput | null } {
+  const common = commonPreflight(snapshot, request)
+  if (!common.input || !common.evaluatedDate) {
+    return { evidence: { kind: 'insufficient-evidence', primaryReason: common.reason!, details: [] }, input: null }
+  }
+  return { evidence: evaluateNormalizedEvidence(snapshot, common.input, common.evaluatedDate), input: common.input }
+}
+
+export function evaluateEvidence(snapshot: PilotSnapshotV1, request: RecommendationRequest | RecommendationInput | unknown): EvidenceEvaluation {
+  return evaluateEvidenceWithInput(snapshot, request).evidence
 }
