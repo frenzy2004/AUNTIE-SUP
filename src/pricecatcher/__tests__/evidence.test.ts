@@ -323,4 +323,115 @@ describe('evidence evaluation', () => {
     expect(preflightBasketDiscovery(makeSnapshot(), discoveryPreflightInput({ lines }) as never)).toMatchObject({ baselineReady: false, completeCandidatePremiseCodes: [] })
     expect(preflightEvidence(makeSnapshot(), modePreflightInput({ lines }) as never)).toMatchObject({ baselineReady: false, completeCandidatePremiseCodes: [] })
   })
+
+  const expectUsualSafeFailure = (input: unknown) => {
+    expect(() => preflightUsualAndGeometry(makeSnapshot(), input as never)).not.toThrow()
+    expect(preflightUsualAndGeometry(makeSnapshot(), input as never)).toMatchObject({ usualPremiseReady: false, usualHasRecentPilotData: false, coordinateViablePremiseCount: 0 })
+  }
+  const expectDiscoverySafeFailure = (input: unknown) => {
+    expect(() => preflightBasketDiscovery(makeSnapshot(), input as never)).not.toThrow()
+    expect(preflightBasketDiscovery(makeSnapshot(), input as never)).toMatchObject({ baselineReady: false, completeCandidatePremiseCodes: [], excludedByReason: {} })
+  }
+  const expectModeSafeFailure = (input: unknown) => {
+    expect(() => preflightEvidence(makeSnapshot(), input as never)).not.toThrow()
+    expect(preflightEvidence(makeSnapshot(), input as never)).toMatchObject({ baselineReady: false, completeCandidatePremiseCodes: [], excludedByReason: {} })
+  }
+
+  // Break caught: Object.keys hides non-enumerable/symbol extras and validation invokes unsafe descriptors/getters.
+  it('rejects non-enumerable and symbol own extras at every reflective reduced boundary', () => {
+    const symbol = Symbol('hidden')
+    const usual = usualPreflightInput(); Object.defineProperty(usual, 'hidden', { value: true }); Object.defineProperty(usual.location, 'hidden', { value: true }); (usual as any)[symbol] = true
+    const discovery = discoveryPreflightInput(); Object.defineProperty(discovery, 'hidden', { value: true }); Object.defineProperty(discovery.location, 'hidden', { value: true }); Object.defineProperty(discovery.lines[0]!, 'hidden', { value: true }); (discovery as any)[symbol] = true
+    const mode = modePreflightInput(); Object.defineProperty(mode, 'hidden', { value: true }); Object.defineProperty(mode.location, 'hidden', { value: true }); Object.defineProperty(mode.lines[0]!, 'hidden', { value: true }); (mode as any)[symbol] = true
+    expectUsualSafeFailure(usual); expectDiscoverySafeFailure(discovery); expectModeSafeFailure(mode)
+  })
+
+  it('rejects custom/inherited data prototypes including discovery inherited mode', () => {
+    const usual = Object.assign(Object.create({ inherited: true }), usualPreflightInput())
+    const discovery = Object.assign(Object.create({ mode: 'walk' }), discoveryPreflightInput())
+    const mode = Object.assign(Object.create({ inherited: true }), modePreflightInput())
+    expectUsualSafeFailure(usual); expectDiscoverySafeFailure(discovery); expectModeSafeFailure(mode)
+  })
+
+  it('rejects accessors without invoking them at every reduced boundary', () => {
+    const throwingGetter = () => { throw new Error('getter must not run') }
+    const usual = usualPreflightInput(); Object.defineProperty(usual, 'evaluatedAt', { enumerable: true, get: throwingGetter })
+    const discovery = discoveryPreflightInput(); Object.defineProperty(discovery.location, 'latitude', { enumerable: true, get: throwingGetter })
+    const mode = modePreflightInput(); Object.defineProperty(mode.lines[0]!, 'itemCode', { enumerable: true, get: throwingGetter })
+    expectUsualSafeFailure(usual); expectDiscoverySafeFailure(discovery); expectModeSafeFailure(mode)
+  })
+
+  it.each([
+    ['ownKeys', () => ({ ownKeys: () => { throw new Error('ownKeys') } })],
+    ['getPrototypeOf', () => ({ getPrototypeOf: () => { throw new Error('getPrototypeOf') } })],
+    ['getOwnPropertyDescriptor', () => ({ getOwnPropertyDescriptor: () => { throw new Error('descriptor') } })]
+  ] as const)('fails closed for Proxy %s traps across every reduced preflight', (_name, handler) => {
+    expectUsualSafeFailure(new Proxy(usualPreflightInput(), handler()))
+    expectDiscoverySafeFailure(new Proxy(discoveryPreflightInput(), handler()))
+    expectModeSafeFailure(new Proxy(modePreflightInput(), handler()))
+  })
+
+  it('does not invoke get-only Proxy traps while decoding copied top-level descriptors', () => {
+    let calls = 0
+    const handler = { get: () => { calls++; throw new Error('must not be read') } }
+    expect(preflightUsualAndGeometry(makeSnapshot(), new Proxy(usualPreflightInput(), handler) as never)).toMatchObject({ usualPremiseReady: true })
+    expect(preflightBasketDiscovery(makeSnapshot(), new Proxy(discoveryPreflightInput(), handler) as never)).toMatchObject({ baselineReady: true, completeCandidatePremiseCodes: ['2'] })
+    expect(preflightEvidence(makeSnapshot(), new Proxy(modePreflightInput(), handler) as never)).toMatchObject({ baselineReady: true, completeCandidatePremiseCodes: ['2'] })
+    expect(calls).toBe(0)
+  })
+
+  it.each([
+    ['usual non-enumerable top', expectUsualSafeFailure, () => { const value = usualPreflightInput(); Object.defineProperty(value, 'hidden', { value: true }); return value }],
+    ['usual symbol top', expectUsualSafeFailure, () => { const value = usualPreflightInput(); (value as any)[Symbol('hidden')] = true; return value }],
+    ['usual non-enumerable location', expectUsualSafeFailure, () => { const value = usualPreflightInput(); Object.defineProperty(value.location, 'hidden', { value: true }); return value }],
+    ['usual symbol location', expectUsualSafeFailure, () => { const value = usualPreflightInput(); (value.location as any)[Symbol('hidden')] = true; return value }],
+    ['discovery non-enumerable top', expectDiscoverySafeFailure, () => { const value = discoveryPreflightInput(); Object.defineProperty(value, 'hidden', { value: true }); return value }],
+    ['discovery symbol location', expectDiscoverySafeFailure, () => { const value = discoveryPreflightInput(); (value.location as any)[Symbol('hidden')] = true; return value }],
+    ['discovery non-enumerable line', expectDiscoverySafeFailure, () => { const value = discoveryPreflightInput(); Object.defineProperty(value.lines[0]!, 'hidden', { value: true }); return value }],
+    ['discovery symbol line', expectDiscoverySafeFailure, () => { const value = discoveryPreflightInput(); (value.lines[0] as any)[Symbol('hidden')] = true; return value }],
+    ['mode non-enumerable top', expectModeSafeFailure, () => { const value = modePreflightInput(); Object.defineProperty(value, 'hidden', { value: true }); return value }],
+    ['mode symbol location', expectModeSafeFailure, () => { const value = modePreflightInput(); (value.location as any)[Symbol('hidden')] = true; return value }],
+    ['mode non-enumerable line', expectModeSafeFailure, () => { const value = modePreflightInput(); Object.defineProperty(value.lines[0]!, 'hidden', { value: true }); return value }],
+    ['mode symbol line', expectModeSafeFailure, () => { const value = modePreflightInput(); (value.lines[0] as any)[Symbol('hidden')] = true; return value }]
+  ] as const)('isolates reflective own-field rejection for %s', (_name, assertSafeFailure, build) => assertSafeFailure(build()))
+
+  it.each([
+    ['discovery location Proxy', expectDiscoverySafeFailure, () => { const value = discoveryPreflightInput(); value.location = new Proxy(value.location, { ownKeys: () => { throw new Error('location ownKeys') } }); return value }],
+    ['discovery lines-array Proxy', expectDiscoverySafeFailure, () => { const value = discoveryPreflightInput(); value.lines = new Proxy(value.lines, { ownKeys: () => { throw new Error('lines ownKeys') } }); return value }],
+    ['mode lines-array Proxy', expectModeSafeFailure, () => { const value = modePreflightInput(); value.lines = new Proxy(value.lines, { getPrototypeOf: () => { throw new Error('lines prototype') } }); return value }],
+    ['discovery line-record Proxy', expectDiscoverySafeFailure, () => { const value = discoveryPreflightInput(); value.lines[0] = new Proxy(value.lines[0]!, { getOwnPropertyDescriptor: () => { throw new Error('line descriptor') } }); return value }]
+  ] as const)('fails closed for nested Proxy %s traps', (_name, assertSafeFailure, build) => assertSafeFailure(build()))
+
+  it('does not invoke get-only nested Proxy traps while retaining valid results', () => {
+    let calls = 0
+    const handler = { get: () => { calls++; throw new Error('must not be read') } }
+    const discovery = discoveryPreflightInput(); discovery.location = new Proxy(discovery.location, handler)
+    const mode = modePreflightInput(); mode.lines[0] = new Proxy(mode.lines[0]!, handler)
+    expect(preflightBasketDiscovery(makeSnapshot(), discovery as never)).toMatchObject({ baselineReady: true, completeCandidatePremiseCodes: ['2'] })
+    expect(preflightEvidence(makeSnapshot(), mode as never)).toMatchObject({ baselineReady: true, completeCandidatePremiseCodes: ['2'] })
+    expect(calls).toBe(0)
+  })
+
+  it.each([
+    ['sparse array', () => { const value = discoveryPreflightInput(); value.lines = new Array(1); return value }],
+    ['array extra property', () => { const value = discoveryPreflightInput(); (value.lines as any).extra = true; return value }],
+    ['array symbol property', () => { const value = discoveryPreflightInput(); (value.lines as any)[Symbol('hidden')] = true; return value }],
+    ['array accessor element', () => { const value = discoveryPreflightInput(); Object.defineProperty(value.lines, '0', { enumerable: true, get: () => { throw new Error('array accessor') } }); return value }]
+  ] as const)('rejects non-dense hostile basket lines arrays: %s', (_name, build) => {
+    const discovery = build()
+    const mode = modePreflightInput({ lines: discovery.lines })
+    expectDiscoverySafeFailure(discovery); expectModeSafeFailure(mode)
+  })
+
+  it('rejects null-prototype reduced records while accepting ordinary object literals', () => {
+    expectUsualSafeFailure(Object.assign(Object.create(null), usualPreflightInput()))
+    expect(preflightUsualAndGeometry(makeSnapshot(), usualPreflightInput() as never)).toMatchObject({ usualPremiseReady: true })
+  })
+
+  it('rejects a huge sparse lines array without treating its declared length as work', () => {
+    const lines = new Array(10_000_000)
+    const startedAt = performance.now()
+    expectDiscoverySafeFailure(discoveryPreflightInput({ lines }))
+    expect(performance.now() - startedAt).toBeLessThan(250)
+  })
 })

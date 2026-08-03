@@ -60,6 +60,43 @@ const hasExactKeys = (value: Record<string, unknown>, keys: readonly string[]): 
   const actual = Object.keys(value)
   return actual.length === keys.length && keys.every(key => hasOwn(value, key))
 }
+const readExactPlainData = (value: unknown, keys: readonly string[]): Record<string, unknown> | null => {
+  try {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return null
+    const prototype = Object.getPrototypeOf(value)
+    if (prototype !== Object.prototype) return null
+    const ownKeys = Reflect.ownKeys(value)
+    if (ownKeys.length !== keys.length || ownKeys.some(key => typeof key !== 'string') || !keys.every(key => ownKeys.includes(key))) return null
+    const descriptors: Record<string, PropertyDescriptor> = Object.getOwnPropertyDescriptors(value)
+    const copy: Record<string, unknown> = {}
+    for (const key of keys) {
+      const descriptor = descriptors[key]
+      if (!descriptor || !descriptor.enumerable || !hasOwn(descriptor, 'value')) return null
+      copy[key] = descriptor.value
+    }
+    return copy
+  } catch { return null }
+}
+const readDensePlainArray = (value: unknown): unknown[] | null => {
+  try {
+    if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) return null
+    const ownKeys = Reflect.ownKeys(value)
+    const lengthDescriptor = Object.getOwnPropertyDescriptor(value, 'length')
+    if (!lengthDescriptor || lengthDescriptor.enumerable || !hasOwn(lengthDescriptor, 'value') || !Number.isSafeInteger(lengthDescriptor.value) || lengthDescriptor.value < 0) return null
+    if (ownKeys.length !== lengthDescriptor.value + 1 || ownKeys.some(key => typeof key !== 'string')) return null
+    const keys = new Set(ownKeys)
+    if (!keys.has('length')) return null
+    const copy: unknown[] = []
+    for (let index = 0; index < lengthDescriptor.value; index++) {
+      const key = String(index)
+      if (!keys.has(key)) return null
+      const descriptor = Object.getOwnPropertyDescriptor(value, key)
+      if (!descriptor || !descriptor.enumerable || !hasOwn(descriptor, 'value')) return null
+      copy.push(descriptor.value)
+    }
+    return copy
+  } catch { return null }
+}
 const parseCanonicalPreflightCode = (value: unknown): string | null => {
   if (typeof value !== 'string' || !/^(0|[1-9]\d*)$/.test(value)) return null
   try { return CanonicalCodeSchema.parse(value) } catch { return null }
@@ -213,73 +250,78 @@ const preflightInput = (snapshot: PilotSnapshotV1, input: BasketDiscoveryInput, 
 }
 
 const normalizePreflightInput = (snapshot: PilotSnapshotV1, value: unknown, requireMode: boolean): { input: BasketDiscoveryInput; mode?: RecommendationInput['mode']; evaluatedDate: LocalDate } | null => {
-  const keys = requireMode ? ['evaluatedAt', 'location', 'usualPremiseCode', 'lines', 'mode'] : ['evaluatedAt', 'location', 'usualPremiseCode', 'lines']
-  if (!isRecord(value) || !hasExactKeys(value, keys) || !ISOInstantSchema.safeParse(value.evaluatedAt).success || !isRecord(value.location) ||
-      !hasExactKeys(value.location, ['latitude', 'longitude', 'accuracyMetres'])) return null
-  const evaluatedAt = value.evaluatedAt as ISOInstant
-  const evaluatedDate = malaysiaDateAt(evaluatedAt)
-  if (new Date(evaluatedAt).getTime() < new Date(snapshot.compiledAt).getTime() - 300_000 || evaluatedDate < snapshot.dataAsOfDate ||
-      (snapshot.dataAsOfDate !== evaluatedDate && snapshot.dataAsOfDate !== addLocalDates(evaluatedDate, -1))) return null
-  const { latitude, longitude, accuracyMetres } = value.location
-  if (![latitude, longitude, accuracyMetres].every(item => typeof item === 'number' && Number.isFinite(item)) ||
-      (latitude as number) < -90 || (latitude as number) > 90 || (longitude as number) < -180 || (longitude as number) > 180 ||
-      (accuracyMetres as number) < 0 || (accuracyMetres as number) > 100) return null
-  const usualPremiseCode = parseCanonicalPreflightCode(value.usualPremiseCode)
-  if (usualPremiseCode === null || !snapshot.premises.some(premise => premise.code === usualPremiseCode) || !Array.isArray(value.lines) || value.lines.length === 0) return null
-  if (requireMode && value.mode !== 'walk' && value.mode !== 'drive') return null
-  const rawLines: Array<{ itemCode: string; quantityHundredths: number }> = []
-  for (const rawLine of value.lines) {
-    if (!isRecord(rawLine) || !hasExactKeys(rawLine, ['itemCode', 'quantityHundredths'])) return null
-    const itemCode = parseCanonicalPreflightCode(rawLine.itemCode)
-    if (itemCode === null || typeof rawLine.quantityHundredths !== 'number' || !Number.isSafeInteger(rawLine.quantityHundredths) || rawLine.quantityHundredths < 1 || !snapshot.items.some(item => item.code === itemCode)) return null
-    rawLines.push({ itemCode, quantityHundredths: rawLine.quantityHundredths })
-  }
   try {
+    const keys = requireMode ? ['evaluatedAt', 'location', 'usualPremiseCode', 'lines', 'mode'] : ['evaluatedAt', 'location', 'usualPremiseCode', 'lines']
+    const data = readExactPlainData(value, keys)
+    if (!data || !ISOInstantSchema.safeParse(data.evaluatedAt).success) return null
+    const location = readExactPlainData(data.location, ['latitude', 'longitude', 'accuracyMetres'])
+    if (!location) return null
+    const evaluatedAt = data.evaluatedAt as ISOInstant
+    const evaluatedDate = malaysiaDateAt(evaluatedAt)
+    if (new Date(evaluatedAt).getTime() < new Date(snapshot.compiledAt).getTime() - 300_000 || evaluatedDate < snapshot.dataAsOfDate ||
+        (snapshot.dataAsOfDate !== evaluatedDate && snapshot.dataAsOfDate !== addLocalDates(evaluatedDate, -1))) return null
+    const { latitude, longitude, accuracyMetres } = location
+    if (![latitude, longitude, accuracyMetres].every(item => typeof item === 'number' && Number.isFinite(item)) ||
+        (latitude as number) < -90 || (latitude as number) > 90 || (longitude as number) < -180 || (longitude as number) > 180 ||
+        (accuracyMetres as number) < 0 || (accuracyMetres as number) > 100) return null
+    const usualPremiseCode = parseCanonicalPreflightCode(data.usualPremiseCode)
+    const basketLines = readDensePlainArray(data.lines)
+    if (usualPremiseCode === null || !snapshot.premises.some(premise => premise.code === usualPremiseCode) || !basketLines || basketLines.length === 0) return null
+    if (requireMode && data.mode !== 'walk' && data.mode !== 'drive') return null
+    const rawLines: Array<{ itemCode: string; quantityHundredths: number }> = []
+    for (const rawLine of basketLines) {
+      const line = readExactPlainData(rawLine, ['itemCode', 'quantityHundredths'])
+      if (!line) return null
+      const itemCode = parseCanonicalPreflightCode(line.itemCode)
+      if (itemCode === null || typeof line.quantityHundredths !== 'number' || !Number.isSafeInteger(line.quantityHundredths) || line.quantityHundredths < 1 || !snapshot.items.some(item => item.code === itemCode)) return null
+      rawLines.push({ itemCode, quantityHundredths: line.quantityHundredths })
+    }
     const lines = mergeBasketLines(snapshot, rawLines)
     return { input: { evaluatedAt, location: { latitude: latitude as number, longitude: longitude as number, accuracyMetres: accuracyMetres as number }, usualPremiseCode, lines },
-      ...(requireMode ? { mode: value.mode as RecommendationInput['mode'] } : {}), evaluatedDate }
+      ...(requireMode ? { mode: data.mode as RecommendationInput['mode'] } : {}), evaluatedDate }
   } catch { return null }
 }
 
 export function preflightEvidence(snapshot: PilotSnapshotV1, input: EvidencePreflightInput): PreflightEvidence {
-  const normalized = normalizePreflightInput(snapshot, input, true)
-  return normalized ? preflightInput(snapshot, normalized.input, normalized.mode === 'walk' ? 2000 : 5000) : emptyPreflight()
+  try {
+    const normalized = normalizePreflightInput(snapshot, input, true)
+    return normalized ? preflightInput(snapshot, normalized.input, normalized.mode === 'walk' ? 2000 : 5000) : emptyPreflight()
+  } catch { return emptyPreflight() }
 }
 
 export function preflightBasketDiscovery(snapshot: PilotSnapshotV1, input: BasketDiscoveryInput): BasketDiscoveryPreflight {
-  const normalized = normalizePreflightInput(snapshot, input, false)
-  return {
-    ...(normalized ? preflightInput(snapshot, normalized.input, 5000) : emptyPreflight()),
-    label: 'complete for these items within 5 km discovery—choose a travel mode to apply its radius'
-  }
+  try {
+    const normalized = normalizePreflightInput(snapshot, input, false)
+    return {
+      ...(normalized ? preflightInput(snapshot, normalized.input, 5000) : emptyPreflight()),
+      label: 'complete for these items within 5 km discovery—choose a travel mode to apply its radius'
+    }
+  } catch { return { ...emptyPreflight(), label: 'complete for these items within 5 km discovery—choose a travel mode to apply its radius' } }
 }
 
 export function preflightUsualAndGeometry(snapshot: PilotSnapshotV1, input: Pick<EvidencePreflightInput, 'evaluatedAt' | 'location' | 'usualPremiseCode'>): UsualAndGeometryPreflight {
   const safe = (): UsualAndGeometryPreflight => ({ usualPremiseReady: false, usualHasRecentPilotData: false, coordinateViablePremiseCount: 0, label: 'within 5 km' })
-  const value: unknown = input
-  if (!isRecord(value) || !hasExactKeys(value, ['evaluatedAt', 'location', 'usualPremiseCode']) || !isRecord(value.location) ||
-      !hasExactKeys(value.location, ['latitude', 'longitude', 'accuracyMetres']) || !ISOInstantSchema.safeParse(value.evaluatedAt).success) return safe()
-  const usualPremiseCode = parseCanonicalPreflightCode(value.usualPremiseCode)
-  const premise = usualPremiseCode === null ? undefined : snapshot.premises.find(candidate => candidate.code === usualPremiseCode)
-  const location = { latitude: value.location.latitude, longitude: value.location.longitude, accuracyMetres: value.location.accuracyMetres }
-  if (!premise ||
-      !Number.isFinite(location.latitude) || !Number.isFinite(location.longitude) || !Number.isFinite(location.accuracyMetres) ||
-      (location.latitude as number) < -90 || (location.latitude as number) > 90 || (location.longitude as number) < -180 || (location.longitude as number) > 180 || (location.accuracyMetres as number) < 0 || (location.accuracyMetres as number) > 100) {
-    return safe()
-  }
-  const evaluatedAt = value.evaluatedAt as ISOInstant
-  const evaluatedDate = malaysiaDateAt(evaluatedAt)
-  if (new Date(evaluatedAt).getTime() < new Date(snapshot.compiledAt).getTime() - 300_000 || evaluatedDate < snapshot.dataAsOfDate ||
-      (snapshot.dataAsOfDate !== evaluatedDate && snapshot.dataAsOfDate !== addLocalDates(evaluatedDate, -1))) {
-    return safe()
-  }
-  const usualHasRecentPilotData = snapshot.evidence.filter(cell => cell.premiseCode === premise.code).some(cell => {
-    const observation = selectedObservation(cell)
-    return observation.status === 'eligible' && withinFreshTargetDates(observation.observedDate, snapshot.dataAsOfDate)
-  })
-  const coordinates: RecommendationInput['location'] = { latitude: location.latitude as number, longitude: location.longitude as number, accuracyMetres: location.accuracyMetres as number }
-  const coordinateViablePremiseCount = snapshot.premises.filter(candidate => candidate.code !== premise.code && candidate.verificationStatus === 'field-verified' && candidate.verifiedOn <= evaluatedDate && candidate.verificationExpiresOn >= evaluatedDate && haversineMetres(coordinates, candidate) <= 5000).length
-  return { usualPremiseReady: true, usualHasRecentPilotData, coordinateViablePremiseCount, label: 'within 5 km' }
+  try {
+    const value = readExactPlainData(input, ['evaluatedAt', 'location', 'usualPremiseCode'])
+    if (!value || !ISOInstantSchema.safeParse(value.evaluatedAt).success) return safe()
+    const location = readExactPlainData(value.location, ['latitude', 'longitude', 'accuracyMetres'])
+    if (!location) return safe()
+    const usualPremiseCode = parseCanonicalPreflightCode(value.usualPremiseCode)
+    const premise = usualPremiseCode === null ? undefined : snapshot.premises.find(candidate => candidate.code === usualPremiseCode)
+    if (!premise || !Number.isFinite(location.latitude) || !Number.isFinite(location.longitude) || !Number.isFinite(location.accuracyMetres) ||
+        (location.latitude as number) < -90 || (location.latitude as number) > 90 || (location.longitude as number) < -180 || (location.longitude as number) > 180 || (location.accuracyMetres as number) < 0 || (location.accuracyMetres as number) > 100) return safe()
+    const evaluatedAt = value.evaluatedAt as ISOInstant
+    const evaluatedDate = malaysiaDateAt(evaluatedAt)
+    if (new Date(evaluatedAt).getTime() < new Date(snapshot.compiledAt).getTime() - 300_000 || evaluatedDate < snapshot.dataAsOfDate ||
+        (snapshot.dataAsOfDate !== evaluatedDate && snapshot.dataAsOfDate !== addLocalDates(evaluatedDate, -1))) return safe()
+    const usualHasRecentPilotData = snapshot.evidence.filter(cell => cell.premiseCode === premise.code).some(cell => {
+      const observation = selectedObservation(cell)
+      return observation.status === 'eligible' && withinFreshTargetDates(observation.observedDate, snapshot.dataAsOfDate)
+    })
+    const coordinates: RecommendationInput['location'] = { latitude: location.latitude as number, longitude: location.longitude as number, accuracyMetres: location.accuracyMetres as number }
+    const coordinateViablePremiseCount = snapshot.premises.filter(candidate => candidate.code !== premise.code && candidate.verificationStatus === 'field-verified' && candidate.verifiedOn <= evaluatedDate && candidate.verificationExpiresOn >= evaluatedDate && haversineMetres(coordinates, candidate) <= 5000).length
+    return { usualPremiseReady: true, usualHasRecentPilotData, coordinateViablePremiseCount, label: 'within 5 km' }
+  } catch { return safe() }
 }
 
 const reasonFromBaselineDetails = (details: ReasonDetail[]): ReasonCode => details[0]!.reason
