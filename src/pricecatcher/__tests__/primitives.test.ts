@@ -40,6 +40,15 @@ describe('canonical identifiers', () => {
     expect(canonicalizeCode('9007199254740992')).toBeNull()
     expect(CanonicalCodeSchema.safeParse('9007199254740992').success).toBe(false)
   })
+
+  // Break caught: whitespace normalization changes, or Unicode lookalikes and embedded whitespace become valid code keys.
+  it('trims surrounding ASCII and Unicode whitespace but rejects non-ASCII numeric forms', () => {
+    expect(canonicalizeCode(' \t0002.000\u2003')).toBe('2')
+    expect(canonicalizeCode('٢')).toBeNull()
+    expect(canonicalizeCode('＋2')).toBeNull()
+    expect(canonicalizeCode('2\u2003.0')).toBeNull()
+    expect(canonicalizeCode('2 .0')).toBeNull()
+  })
 })
 
 describe('Malaysia dates', () => {
@@ -55,6 +64,38 @@ describe('Malaysia dates', () => {
     expect(() => malaysiaDateAt('not-an-instant')).toThrow(RangeError)
     expect(() => addLocalDates('2026-02-30' as never, 1)).toThrow(RangeError)
     expect(() => differenceInLocalDates('2026-02-30' as never, '2026-02-28')).toThrow(RangeError)
+  })
+
+  // Break caught: date arithmetic or Malaysia midnight conversion emits an out-of-contract five-digit year.
+  it('rejects date calculations beyond the LocalDate year boundary', () => {
+    expect(() => addLocalDates('9999-12-31', 1)).toThrow(RangeError)
+    expect(() => malaysiaDateAt('9999-12-31T16:30:00.000Z')).toThrow(RangeError)
+  })
+
+  // Break caught: calendar addition incorrectly handles leap days, centuries, or the final supported LocalDate.
+  it.each([
+    ['2024-02-28', 1, '2024-02-29'],
+    ['2024-02-29', 1, '2024-03-01'],
+    ['2000-02-28', 1, '2000-02-29'],
+    ['2100-02-28', 1, '2100-03-01'],
+    ['9999-12-30', 1, '9999-12-31']
+  ])('adds %i days from %s across a calendar boundary', (date, delta, expected) => {
+    expect(addLocalDates(date as never, delta)).toBe(expected)
+  })
+
+  // Break caught: the last valid Malaysia-local instant is rejected before the LocalDate boundary is crossed.
+  it('retains the final supported Malaysia local date', () => {
+    expect(malaysiaDateAt('9999-12-31T15:59:59.999Z')).toBe('9999-12-31')
+  })
+
+  // Break caught: non-integral or unsafe date deltas cause engine-dependent date normalization.
+  it.each([0.5, Number.MAX_SAFE_INTEGER + 1])('rejects invalid date delta %p', delta => {
+    expect(() => addLocalDates('2026-08-03', delta)).toThrow(RangeError)
+  })
+
+  // Break caught: date difference loses leap-day semantics by treating every February as 28 days.
+  it('counts the leap day when comparing local dates', () => {
+    expect(differenceInLocalDates('2024-03-01', '2024-02-28')).toBe(2)
   })
 })
 
@@ -90,8 +131,103 @@ describe('integer-sen arithmetic', () => {
     expect(() => checkedSum([Number.MAX_SAFE_INTEGER, 1])).toThrow(RangeError)
   })
 
+  // Break caught: checked addition overflows or underflows at either signed safe-integer boundary.
+  it.each([
+    [Number.MAX_SAFE_INTEGER, -1, Number.MAX_SAFE_INTEGER - 1],
+    [Number.MIN_SAFE_INTEGER, 1, Number.MIN_SAFE_INTEGER + 1]
+  ])('adds signed boundary values %p and %p safely', (left, right, expected) => {
+    expect(checkedAdd(left, right)).toBe(expected)
+  })
+
+  // Break caught: checked addition converts a result outside the signed safe-integer range.
+  it.each([
+    [Number.MAX_SAFE_INTEGER, 1],
+    [Number.MIN_SAFE_INTEGER, -1]
+  ])('rejects checked-add overflow for %p and %p', (left, right) => {
+    expect(() => checkedAdd(left, right)).toThrow(RangeError)
+  })
+
+  // Break caught: checked subtraction mishandles signed values near either safe-integer boundary.
+  it.each([
+    [Number.MAX_SAFE_INTEGER, 1, Number.MAX_SAFE_INTEGER - 1],
+    [Number.MIN_SAFE_INTEGER, -1, Number.MIN_SAFE_INTEGER + 1]
+  ])('subtracts signed boundary values %p and %p safely', (left, right, expected) => {
+    expect(checkedSubtract(left, right)).toBe(expected)
+  })
+
+  // Break caught: checked subtraction converts a result outside the signed safe-integer range.
+  it.each([
+    [Number.MAX_SAFE_INTEGER, -1],
+    [Number.MIN_SAFE_INTEGER, 1]
+  ])('rejects checked-subtract overflow for %p and %p', (left, right) => {
+    expect(() => checkedSubtract(left, right)).toThrow(RangeError)
+  })
+
+  // Break caught: checked summation loses sign or overflows at either safe-integer boundary.
+  it.each([
+    [[Number.MAX_SAFE_INTEGER, -1], Number.MAX_SAFE_INTEGER - 1],
+    [[Number.MIN_SAFE_INTEGER, 1], Number.MIN_SAFE_INTEGER + 1]
+  ])('sums signed boundary values %p safely', (values, expected) => {
+    expect(checkedSum(values)).toBe(expected)
+  })
+
+  // Break caught: checked summation converts an overflowed or underflowed total to Number.
+  it.each([
+    [Number.MAX_SAFE_INTEGER, 1],
+    [Number.MIN_SAFE_INTEGER, -1]
+  ])('rejects checked-sum overflow for %p with %p', (left, right) => {
+    expect(() => checkedSum([left, right])).toThrow(RangeError)
+  })
+
+  // Break caught: checked signed arithmetic accepts a non-integral operand before converting to bigint.
+  it.each([
+    ['checkedAdd', () => checkedAdd(0.5, 0)],
+    ['checkedSubtract', () => checkedSubtract(0, 0.5)],
+    ['checkedSum', () => checkedSum([0, 0.5])]
+  ])('rejects non-integral input for %s', (_name, operation) => {
+    expect(operation).toThrow(RangeError)
+  })
+
+  // Break caught: arithmetic helpers accept fractional operands, invalid denominators, or an unsafe product result.
+  it.each([
+    ['roundHalfUp fractional numerator', () => roundHalfUp(1.5, 1)],
+    ['roundHalfUp negative numerator', () => roundHalfUp(-1, 1)],
+    ['roundHalfUp non-positive denominator', () => roundHalfUp(1, 0)],
+    ['roundHalfUp safe upper result', () => roundHalfUp(Number.MAX_SAFE_INTEGER, 1), Number.MAX_SAFE_INTEGER],
+    ['multiplyDivideHalfUp fractional operand', () => multiplyDivideHalfUp(1.5, 1, 1)],
+    ['multiplyDivideHalfUp negative operand', () => multiplyDivideHalfUp(-1, 1, 1)],
+    ['multiplyDivideHalfUp non-positive denominator', () => multiplyDivideHalfUp(1, 1, 0)],
+    ['multiplyDivideHalfUp unsafe result', () => multiplyDivideHalfUp(Number.MAX_SAFE_INTEGER, 2, 1)],
+    ['lineTotalSen negative price', () => lineTotalSen(-1, 100)],
+    ['lineTotalSen fractional quantity', () => lineTotalSen(1, 1.5)],
+    ['lineTotalSen unsafe result', () => lineTotalSen(Number.MAX_SAFE_INTEGER, 101)],
+    ['unitAllowanceSen fractional price', () => unitAllowanceSen(1.5)],
+    ['unitAllowanceSen negative price', () => unitAllowanceSen(-1)],
+    ['unitAllowanceSen safe upper input', () => unitAllowanceSen(Number.MAX_SAFE_INTEGER), 180_143_985_094_820],
+    ['lineAllowanceSen fractional quantity', () => lineAllowanceSen(1, 1.5)],
+    ['lineAllowanceSen unsafe result', () => lineAllowanceSen(Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER)]
+  ])('validates %s', (_name, operation, expected?) => {
+    if (expected === undefined) expect(operation).toThrow(RangeError)
+    else expect(operation()).toBe(expected)
+  })
+
   // Break caught: invalid price representations, including zero and exponent notation, become monetary values.
   it.each(['0', '0.00', '-1', '1e2', '1.234', Number.POSITIVE_INFINITY])('rejects invalid price %p', raw => {
+    expect(parsePriceSen(raw)).toBeNull()
+  })
+
+  // Break caught: valid Number inputs no longer retain their plain decimal sen value.
+  it.each([[1, 100], [1.2, 120], [1.23, 123]])('parses ordinary numeric price %p into %p sen', (raw, expected) => {
+    expect(parsePriceSen(raw)).toBe(expected)
+  })
+
+  // Break caught: scientific stringification or binary floating-point artifacts are accepted as prices.
+  it.each([1e-7, 1e21, 0.1 + 0.2])('rejects non-plain numeric price representation %p', raw => {
+    expect(parsePriceSen(raw)).toBeNull()
+  })
+
+  // Break caught: numeric zero, negative, and non-finite inputs bypass the decimal representation guard.
+  it.each([0, -1, Number.NaN, Number.NEGATIVE_INFINITY])('rejects invalid numeric price %p', raw => {
     expect(parsePriceSen(raw)).toBeNull()
   })
 
@@ -117,5 +253,45 @@ describe('distance', () => {
     [{ latitude: Number.NaN, longitude: 0 }, { latitude: 0, longitude: 0 }]
   ])('rejects invalid coordinates %p', (from, to) => {
     expect(() => haversineMetres(from, to)).toThrow(RangeError)
+  })
+
+  // Break caught: valid coordinate extrema are rejected by strict rather than inclusive range validation.
+  it.each([
+    [{ latitude: -90, longitude: -180 }, { latitude: 90, longitude: 180 }],
+    [{ latitude: 90, longitude: 180 }, { latitude: -90, longitude: -180 }]
+  ])('accepts exact coordinate boundaries %p', (from, to) => {
+    expect(haversineMetres(from, to)).toBeGreaterThan(0)
+  })
+
+  // Break caught: latitude/longitude just outside inclusive bounds or non-finite values produce distances.
+  it.each([
+    [{ latitude: -90.000001, longitude: 0 }, { latitude: 0, longitude: 0 }],
+    [{ latitude: 90.000001, longitude: 0 }, { latitude: 0, longitude: 0 }],
+    [{ latitude: 0, longitude: -180.000001 }, { latitude: 0, longitude: 0 }],
+    [{ latitude: 0, longitude: 180.000001 }, { latitude: 0, longitude: 0 }],
+    [{ latitude: Number.POSITIVE_INFINITY, longitude: 0 }, { latitude: 0, longitude: 0 }],
+    [{ latitude: 0, longitude: Number.NEGATIVE_INFINITY }, { latitude: 0, longitude: 0 }]
+  ])('rejects out-of-range coordinates %p', (from, to) => {
+    expect(() => haversineMetres(from, to)).toThrow(RangeError)
+  })
+
+  // Break caught: antipodal and nearly antipodal paths overflow into a non-finite rounded distance.
+  it.each([
+    [{ latitude: 0, longitude: 0 }, { latitude: 0, longitude: 180 }],
+    [{ latitude: 0, longitude: 0 }, { latitude: 0.000001, longitude: 180 }]
+  ])('returns a finite positive distance for antipodal coordinates %p', (from, to) => {
+    const distance = haversineMetres(from, to)
+    expect(Number.isSafeInteger(distance)).toBe(true)
+    expect(distance).toBeGreaterThan(20_000_000)
+  })
+
+  // Break caught: floating-point rounding lifts the Haversine intermediate above one and poisons the result without clamping.
+  it('clamps a floating-point Haversine intermediate above one', () => {
+    const distance = haversineMetres(
+      { latitude: 63.322350523500035, longitude: 113.08807936575892 },
+      { latitude: -63.3223505234998, longitude: -66.91192063424137 }
+    )
+    expect(Number.isSafeInteger(distance)).toBe(true)
+    expect(distance).toBe(20_015_114)
   })
 })

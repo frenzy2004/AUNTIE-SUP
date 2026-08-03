@@ -23,7 +23,9 @@ const formatMalaysiaDate = (date: Date): LocalDate => {
   const fields = Object.fromEntries(malaysiaDateFormatter.formatToParts(date)
     .filter(part => part.type !== 'literal')
     .map(part => [part.type, part.value]))
-  return `${fields.year}-${fields.month}-${fields.day}` as LocalDate
+  const parsed = LocalDateSchema.safeParse(`${fields.year}-${fields.month}-${fields.day}`)
+  if (!parsed.success) throw new RangeError('formatted date is outside the LocalDate range')
+  return parsed.data
 }
 
 export function malaysiaDateAt(instant: string): LocalDate {
