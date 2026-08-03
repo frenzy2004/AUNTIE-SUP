@@ -23,13 +23,14 @@ const copyUntrustedData = (value: unknown, state: DataCopyState, depth: number):
   state.active.add(value)
   try {
     if (Array.isArray(value)) {
-      if (Object.getPrototypeOf(value) !== Array.prototype) return DATA_COPY_FAILED
-      const keys = Reflect.ownKeys(value)
       const lengthDescriptor = Object.getOwnPropertyDescriptor(value, 'length')
       if (!lengthDescriptor || lengthDescriptor.enumerable || !Object.prototype.hasOwnProperty.call(lengthDescriptor, 'value') ||
-          !Number.isSafeInteger(lengthDescriptor.value) || lengthDescriptor.value < 0 || keys.length !== lengthDescriptor.value + 1) {
+          !Number.isSafeInteger(lengthDescriptor.value) || lengthDescriptor.value < 0 || lengthDescriptor.value > MAX_COPY_VALUES - state.values) {
         return DATA_COPY_FAILED
       }
+      if (Object.getPrototypeOf(value) !== Array.prototype) return DATA_COPY_FAILED
+      const keys = Reflect.ownKeys(value)
+      if (keys.length !== lengthDescriptor.value + 1) return DATA_COPY_FAILED
       const keySet = new Set(keys)
       if (keys.some(key => typeof key !== 'string') || !keySet.has('length')) return DATA_COPY_FAILED
       const copy: unknown[] = []

@@ -5,7 +5,7 @@ import {
   inputWithOldClock, makeSnapshot, snapshotWithBadBaselineAndNoCandidate, snapshotWithCandidateObservations,
   snapshotWithMixedCandidateFailures, snapshotWithOldData, snapshotWithOnlyFarCandidates, snapshotWithPairDates,
   snapshotWithThreePremisesAndOneBadCandidate, validInput, eligibleCell,
-  fixedDescriptorMutationProbe, lineDescriptorMutationProbe
+  fixedDescriptorMutationProbe, lineDescriptorMutationProbe, previousDaySnapshotWithStaleEvidence
 } from './snapshotFixture'
 
 const usualPreflightInput = (overrides: Record<string, unknown> = {}) => {
@@ -35,6 +35,25 @@ describe('evidence evaluation', () => {
     expect(evaluateEvidence(snapshotWithOldData(), validInput())).toMatchObject({ kind: 'insufficient-evidence', primaryReason: 'snapshot-stale' })
   })
 
+  // Break caught: baseline freshness is measured from snapshot publication instead of the injected evaluation date.
+  it('rejects a previous-day snapshot whose baseline selected observation is two evaluation dates old', () => {
+    const snapshot = previousDaySnapshotWithStaleEvidence('baseline')
+    const input = validInput()
+    expect(evaluateEvidence(snapshot, input)).toMatchObject({
+      kind: 'insufficient-evidence', primaryReason: 'baseline-stale'
+    })
+    expect(preflightUsualAndGeometry(snapshot, usualPreflightInput())).toMatchObject({ usualHasRecentPilotData: false })
+    expect(preflightBasketDiscovery(snapshot, discoveryPreflightInput())).toMatchObject({ baselineReady: false })
+    expect(preflightEvidence(snapshot, modePreflightInput() as never)).toMatchObject({ baselineReady: false })
+  })
+
+  // Break caught: candidate freshness is measured from snapshot publication instead of the injected evaluation date.
+  it('rejects a previous-day snapshot whose candidate selected observation is two evaluation dates old', () => {
+    expect(evaluateEvidence(previousDaySnapshotWithStaleEvidence('candidate'), validInput())).toMatchObject({
+      kind: 'insufficient-evidence', primaryReason: 'candidate-stale'
+    })
+  })
+
   // Break caught: a later anomalous observation is skipped in favour of an older price.
   it('never falls back from a newer anomalous row', () => {
     expect(evaluateEvidence(snapshotWithCandidateObservations([{ status: 'eligible', observedDate: '2026-08-01', priceSen: 500 }, { status: 'anomalous', observedDate: '2026-08-02', reason: 'outside-ratio-bound' }]), validInput())).toMatchObject({ kind: 'insufficient-evidence', primaryReason: 'candidate-anomalous' })
@@ -42,12 +61,16 @@ describe('evidence evaluation', () => {
 
   // Break caught: an explicitly materialized missing row hides the available older observation.
   it('treats materialized missing as no raw row rather than masking yesterday', () => {
-    expect(evaluateEvidence(snapshotWithCandidateObservations([{ status: 'eligible', observedDate: '2026-08-01', priceSen: 500 }, { status: 'missing', observedDate: '2026-08-02' }]), validInput()).kind).toBe('ready')
+    const snapshot = snapshotWithCandidateObservations([{ status: 'eligible', observedDate: '2026-08-01', priceSen: 500 }, { status: 'missing', observedDate: '2026-08-02' }])
+    snapshot.compiledAt = '2026-08-02T03:00:00.000Z'
+    expect(evaluateEvidence(snapshot, validInput({ evaluatedAt: '2026-08-02T03:00:00.000Z' })).kind).toBe('ready')
   })
 
   // Break caught: evaluator finds an older common date instead of aligning the independently newest rows.
   it('requires independently newest baseline and candidate dates to match', () => {
-    expect(evaluateEvidence(snapshotWithPairDates('2026-08-01', '2026-08-02'), validInput())).toMatchObject({ kind: 'insufficient-evidence', primaryReason: 'candidate-date-mismatch' })
+    const snapshot = snapshotWithPairDates('2026-08-01', '2026-08-02')
+    snapshot.compiledAt = '2026-08-02T03:00:00.000Z'
+    expect(evaluateEvidence(snapshot, validInput({ evaluatedAt: '2026-08-02T03:00:00.000Z' }))).toMatchObject({ kind: 'insufficient-evidence', primaryReason: 'candidate-date-mismatch' })
   })
 
   // Break caught: one failed premise removes an independent complete candidate or increments line counts.
@@ -71,10 +94,40 @@ describe('evidence evaluation', () => {
     [{ extra: true }, 'input-invalid'],
     [{ location: undefined }, 'location-missing'],
     [{ location: { latitude: 3, longitude: 101, accuracyMetres: 101 } }, 'location-imprecise'],
+    [{ lines: undefined }, 'basket-empty'],
     [{ lines: [] }, 'basket-empty'],
     [{ lines: [{ itemCode: '10', quantityHundredths: 99 }] }, 'input-invalid']
   ])('normalizes public request failures as %s', (patch, reason) => {
     expect(evaluateEvidence(makeSnapshot(), { ...validInput(), ...patch } as never)).toMatchObject({ kind: 'insufficient-evidence', primaryReason: reason })
+  })
+
+  // Break caught: a present malformed basket container is classified as semantic absence.
+  it.each([null, 42, 'not-an-array', { 0: { itemCode: '10', quantityHundredths: 100 }, length: 1 }])(
+    'classifies a present malformed lines container %p as input-invalid', lines => {
+      expect(evaluateEvidence(makeSnapshot(), { ...validInput(), lines })).toEqual({
+        kind: 'insufficient-evidence', primaryReason: 'input-invalid', details: []
+      })
+    }
+  )
+
+  // Break caught: classifying malformed lines reads a later allowed descriptor and loses refusal precedence.
+  it('returns input-invalid for malformed lines without reading a later mode descriptor', () => {
+    const request = { ...validInput(), lines: null } as unknown as Record<string, unknown>
+    let modeDescriptorCalls = 0
+    const trapped = new Proxy(request, {
+      getOwnPropertyDescriptor: (target, key) => {
+        if (key === 'mode') {
+          modeDescriptorCalls++
+          throw new Error('later mode descriptor must not run')
+        }
+        return Reflect.getOwnPropertyDescriptor(target, key)
+      }
+    })
+
+    expect(evaluateEvidence(makeSnapshot(), trapped)).toEqual({
+      kind: 'insufficient-evidence', primaryReason: 'input-invalid', details: []
+    })
+    expect(modeDescriptorCalls).toBe(0)
   })
 
   it('coalesces duplicate quantities and retains only valid whole unit baskets', () => {
@@ -148,6 +201,35 @@ describe('evidence evaluation', () => {
     }
   })
 
+  // Break caught: attacker ownKeys order lets a later known nested descriptor rewrite an earlier location or line field.
+  it('captures known nested request fields in semantic order regardless of attacker key order', () => {
+    const locationRequest = validInput()
+    const rawLocation = { ...locationRequest.location }
+    locationRequest.location = new Proxy(rawLocation, {
+      ownKeys: target => ['accuracyMetres', 'longitude', 'latitude'] satisfies Array<keyof typeof target>,
+      getOwnPropertyDescriptor: (target, key) => {
+        if (key === 'accuracyMetres') rawLocation.latitude = 999
+        return Reflect.getOwnPropertyDescriptor(target, key)
+      },
+      get: () => { throw new Error('raw location get must not run') }
+    })
+    expect(evaluateEvidence(makeSnapshot(), locationRequest)).toMatchObject({ kind: 'ready' })
+
+    const lineRequest = validInput()
+    const rawLine = { ...lineRequest.lines[0]! }
+    lineRequest.lines = [new Proxy(rawLine, {
+      ownKeys: target => ['quantityHundredths', 'itemCode'] satisfies Array<keyof typeof target>,
+      getOwnPropertyDescriptor: (target, key) => {
+        if (key === 'quantityHundredths') rawLine.itemCode = '99'
+        return Reflect.getOwnPropertyDescriptor(target, key)
+      },
+      get: () => { throw new Error('raw line get must not run') }
+    })]
+    expect(normalizeRecommendationRequest(lineRequest)?.lines).toEqual([{ itemCode: '10', quantityHundredths: 100 }])
+    rawLine.itemCode = '10'
+    expect(evaluateEvidence(makeSnapshot(), lineRequest)).toMatchObject({ kind: 'ready' })
+  })
+
   // Break caught: the five minute grace is implemented as a strict or rounded boundary.
   it('uses an inclusive exact five-minute compilation grace', () => {
     expect(evaluateEvidence(makeSnapshot(), validInput({ evaluatedAt: '2026-08-03T02:55:00.000Z' })).kind).toBe('ready')
@@ -173,12 +255,12 @@ describe('evidence evaluation', () => {
   })
 
   it('does not search an older common date after independently selecting a newer candidate row', () => {
-    const snapshot = makeSnapshot({ evidence: [{ premiseCode: '1', itemCode: '10', officialUnit: 'each', observations: [
+    const snapshot = makeSnapshot({ compiledAt: '2026-08-02T03:00:00.000Z', evidence: [{ premiseCode: '1', itemCode: '10', officialUnit: 'each', observations: [
       { status: 'eligible', observedDate: '2026-08-01', priceSen: 600 }, { status: 'missing', observedDate: '2026-08-02' }
     ] }, { premiseCode: '2', itemCode: '10', officialUnit: 'each', observations: [
       { status: 'eligible', observedDate: '2026-08-01', priceSen: 500 }, { status: 'eligible', observedDate: '2026-08-02', priceSen: 501 }
     ] }] })
-    expect(evaluateEvidence(snapshot, validInput())).toMatchObject({ kind: 'insufficient-evidence', primaryReason: 'candidate-date-mismatch' })
+    expect(evaluateEvidence(snapshot, validInput({ evaluatedAt: '2026-08-02T03:00:00.000Z' }))).toMatchObject({ kind: 'insufficient-evidence', primaryReason: 'candidate-date-mismatch' })
   })
 
   it('reports no recent usual data without claiming an empty basket is complete', () => {
@@ -556,6 +638,123 @@ describe('evidence evaluation', () => {
     expect(preflightEvidence(makeSnapshot(), modePreflightInput() as never)).toMatchObject({ baselineReady: true, completeCandidatePremiseCodes: ['2'] })
   })
 
+  // Break caught: a later mode descriptor mutates a line before mode-aware preflight captures the line record.
+  it('captures mode-preflight lines before the later mode descriptor regardless of attacker key order', () => {
+    const events: string[] = []
+    const rawLine = { itemCode: '10', quantityHundredths: 100 }
+    const line = new Proxy(rawLine, {
+      ownKeys: target => Reflect.ownKeys(target),
+      getOwnPropertyDescriptor: (target, key) => {
+        events.push(`line:${String(key)}`)
+        return Reflect.getOwnPropertyDescriptor(target, key)
+      },
+      get: () => { throw new Error('raw line get must not run') }
+    })
+    const target = modePreflightInput({ lines: [line] })
+    const input = new Proxy(target, {
+      ownKeys: object => ['mode', ...Reflect.ownKeys(object).filter(key => key !== 'mode')],
+      getOwnPropertyDescriptor: (object, key) => {
+        events.push(`top:${String(key)}`)
+        if (key === 'mode') rawLine.itemCode = '99'
+        return Reflect.getOwnPropertyDescriptor(object, key)
+      },
+      get: () => { throw new Error('raw top-level get must not run') }
+    })
+
+    expect(preflightEvidence(makeSnapshot(), input as never)).toMatchObject({
+      baselineReady: true, completeCandidatePremiseCodes: ['2']
+    })
+    expect(events.indexOf('line:itemCode')).toBeLessThan(events.indexOf('top:mode'))
+    for (const event of ['top:evaluatedAt', 'top:location', 'top:usualPremiseCode', 'top:lines', 'top:mode', 'line:itemCode', 'line:quantityHundredths']) {
+      expect(events.filter(candidate => candidate === event), event).toHaveLength(1)
+    }
+  })
+
+  // Break caught: reflecting a later array index can mutate an earlier line before discovery captures it.
+  it('captures each discovery line before reflecting a later array index', () => {
+    const events: string[] = []
+    const rawFirst = { itemCode: '10', quantityHundredths: 50 }
+    const first = new Proxy(rawFirst, {
+      ownKeys: target => Reflect.ownKeys(target),
+      getOwnPropertyDescriptor: (target, key) => {
+        events.push(`first:${String(key)}`)
+        return Reflect.getOwnPropertyDescriptor(target, key)
+      },
+      get: () => { throw new Error('raw first-line get must not run') }
+    })
+    const target = [first, { itemCode: '10', quantityHundredths: 50 }]
+    const lines = new Proxy(target, {
+      ownKeys: array => Reflect.ownKeys(array),
+      getOwnPropertyDescriptor: (array, key) => {
+        events.push(`array:${String(key)}`)
+        if (key === '1') rawFirst.itemCode = '99'
+        return Reflect.getOwnPropertyDescriptor(array, key)
+      },
+      get: () => { throw new Error('raw lines get must not run') }
+    })
+
+    expect(preflightBasketDiscovery(makeSnapshot(), discoveryPreflightInput({ lines }) as never)).toMatchObject({
+      baselineReady: true, completeCandidatePremiseCodes: ['2']
+    })
+    expect(events.indexOf('first:itemCode')).toBeLessThan(events.indexOf('array:1'))
+    for (const event of ['array:length', 'array:0', 'array:1', 'first:itemCode', 'first:quantityHundredths']) {
+      expect(events.filter(candidate => candidate === event), event).toHaveLength(1)
+    }
+  })
+
+  // Break caught: a later usual-code descriptor mutates location before usual/geometry preflight captures it.
+  it('captures usual-preflight location before the later usual code regardless of attacker key order', () => {
+    const events: string[] = []
+    const rawLocation = { latitude: 3, longitude: 101, accuracyMetres: 10 }
+    const location = new Proxy(rawLocation, {
+      ownKeys: target => Reflect.ownKeys(target),
+      getOwnPropertyDescriptor: (target, key) => {
+        events.push(`location:${String(key)}`)
+        return Reflect.getOwnPropertyDescriptor(target, key)
+      },
+      get: () => { throw new Error('raw location get must not run') }
+    })
+    const target = usualPreflightInput({ location })
+    const input = new Proxy(target, {
+      ownKeys: object => ['usualPremiseCode', ...Reflect.ownKeys(object).filter(key => key !== 'usualPremiseCode')],
+      getOwnPropertyDescriptor: (object, key) => {
+        events.push(`top:${String(key)}`)
+        if (key === 'usualPremiseCode') rawLocation.latitude = 999
+        return Reflect.getOwnPropertyDescriptor(object, key)
+      },
+      get: () => { throw new Error('raw top-level get must not run') }
+    })
+
+    expect(preflightUsualAndGeometry(makeSnapshot(), input as never)).toMatchObject({
+      usualPremiseReady: true, coordinateViablePremiseCount: 1
+    })
+    expect(events.indexOf('location:latitude')).toBeLessThan(events.indexOf('top:usualPremiseCode'))
+    for (const event of ['top:evaluatedAt', 'top:location', 'top:usualPremiseCode', 'location:latitude', 'location:longitude', 'location:accuracyMetres']) {
+      expect(events.filter(candidate => candidate === event), event).toHaveLength(1)
+    }
+  })
+
+  // Break caught: reduced preflights scan an attacker-sized digit string before enforcing the canonical-code bound.
+  it('bounds very-long canonical-code candidates before regex work in every reduced preflight', () => {
+    const veryLongCode = '9'.repeat(100_000)
+    const originalTest = RegExp.prototype.test
+    let longPatternCalls = 0
+    RegExp.prototype.test = function (value: string): boolean {
+      if (value === veryLongCode) longPatternCalls++
+      return originalTest.call(this, value)
+    }
+    try {
+      expect(preflightUsualAndGeometry(makeSnapshot(), usualPreflightInput({ usualPremiseCode: veryLongCode }) as never)).toMatchObject({ usualPremiseReady: false })
+      expect(preflightBasketDiscovery(makeSnapshot(), discoveryPreflightInput({ usualPremiseCode: veryLongCode }) as never)).toMatchObject({ baselineReady: false })
+      expect(preflightEvidence(makeSnapshot(), modePreflightInput({ usualPremiseCode: veryLongCode }) as never)).toMatchObject({ baselineReady: false })
+      expect(preflightBasketDiscovery(makeSnapshot(), discoveryPreflightInput({ lines: [{ itemCode: veryLongCode, quantityHundredths: 100 }] }) as never)).toMatchObject({ baselineReady: false })
+      expect(preflightEvidence(makeSnapshot(), modePreflightInput({ lines: [{ itemCode: veryLongCode, quantityHundredths: 100 }] }) as never)).toMatchObject({ baselineReady: false })
+    } finally {
+      RegExp.prototype.test = originalTest
+    }
+    expect(longPatternCalls).toBe(0)
+  })
+
   it.each([
     ['usual extra top-level key', preflightUsualAndGeometry, usualPreflightInput({ extra: true }), { usualPremiseReady: false }],
     ['usual nested location key', preflightUsualAndGeometry, usualPreflightInput({ location: { latitude: 3, longitude: 101, accuracyMetres: 10, extra: true } }), { usualPremiseReady: false }],
@@ -773,9 +972,15 @@ describe('evidence evaluation', () => {
     expect(virtualIndexDescriptorCalls).toBe(0)
   })
 
-  it('rejects an array whose bulk descriptor snapshot changes the early length', () => {
+  it('rejects a dense array whose captured length disagrees with its exact key set', () => {
     const target = new Array(2)
     Object.defineProperty(target, '0', {
+      configurable: true,
+      enumerable: true,
+      writable: true,
+      value: { itemCode: '10', quantityHundredths: 100 }
+    })
+    Object.defineProperty(target, '1', {
       configurable: true,
       enumerable: true,
       writable: true,
@@ -799,7 +1004,7 @@ describe('evidence evaluation', () => {
       completeCandidatePremiseCodes: [],
       excludedByReason: {}
     })
-    expect(lengthDescriptorCalls).toBe(2)
+    expect(lengthDescriptorCalls).toBe(1)
     expect(ownKeysCalls).toBe(1)
     expect(getCalls).toBe(0)
   })

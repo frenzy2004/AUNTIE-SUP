@@ -137,6 +137,32 @@ const expectOnlyIssue = (result: any, expected: { path: PropertyKey[], message: 
 }
 
 describe('runtime contracts', () => {
+  // Break caught: recursive request capture reflects every virtual sparse index before rejecting an over-budget array.
+  it('rejects an oversized nested array before invoking its ownKeys trap', () => {
+    for (const [name, schema, build] of [
+      ['request', RecommendationRequestSchema, (lines: unknown) => ({ lines })],
+      ['input', RecommendationInputSchema, (lines: unknown) => ({ ...validInput(), lines })]
+    ] as const) {
+      const target = new Array(100_001)
+      let lengthDescriptorCalls = 0
+      let ownKeysCalls = 0
+      let getCalls = 0
+      const lines = new Proxy(target, {
+        ownKeys: array => { ownKeysCalls++; return Reflect.ownKeys(array) },
+        getOwnPropertyDescriptor: (array, key) => {
+          if (key === 'length') lengthDescriptorCalls++
+          return Reflect.getOwnPropertyDescriptor(array, key)
+        },
+        get: () => { getCalls++; throw new Error('raw array get must not run') }
+      })
+
+      expect(schema.safeParse(build(lines)).success, name).toBe(false)
+      expect(lengthDescriptorCalls, name).toBe(1)
+      expect(ownKeysCalls, name).toBe(0)
+      expect(getCalls, name).toBe(0)
+    }
+  })
+
   // Break caught: exported strict schemas silently strip reflection-only extras or throw on hostile reflection.
   it('rejects symbol, non-enumerable, and own __proto__ extras without throwing', () => {
     const expectSafeFailure = (schema: { safeParse: (value: unknown) => { success: boolean } }, value: unknown, name: string): void => {

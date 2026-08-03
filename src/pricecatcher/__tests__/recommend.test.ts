@@ -7,7 +7,7 @@ import { PilotSnapshotV1Schema, type PilotSnapshotV1 } from '../contracts/snapsh
 import {
   drivingInput, eligibleCell, goldenInput, goldenSnapshot, goldenSnapshotWithMode,
   inputWithoutTripFields, priceOnlyDrivingInput, snapshotWherePriceAndTripWinnersDiffer,
-  fixedDescriptorMutationProbe, lineDescriptorMutationProbe
+  fixedDescriptorMutationProbe, lineDescriptorMutationProbe, previousDaySnapshotWithStaleEvidence, validInput
 } from './snapshotFixture'
 
 const OBSERVED_DATE = '2026-08-02' as const
@@ -62,6 +62,20 @@ const snapshotWithEqualCandidates = (nearer: boolean): PilotSnapshotV1 => {
 }
 
 describe('PriceCatcher recommendation selection', () => {
+  // Break caught: stale baseline/candidate rows can produce an actionable recommendation from a previous-day snapshot.
+  it.each(['baseline', 'candidate'] as const)('never recommends from a two-evaluation-date-old %s observation', scope => {
+    expect(recommend(previousDaySnapshotWithStaleEvidence(scope), validInput({ worthwhileThresholdSen: 0 }))).toMatchObject({
+      kind: 'insufficient-evidence', primaryReason: `${scope}-stale`
+    })
+  })
+
+  // Break caught: recommendation classifies a present malformed basket container as an empty basket.
+  it.each([null, 42, 'not-an-array', { 0: { itemCode: '10', quantityHundredths: 100 }, length: 1 }])(
+    'returns input-invalid for a present malformed lines container %p', lines => {
+      expect(recommend(goldenSnapshot(), { ...goldenInput(), lines })).toEqual(INPUT_INVALID_RESULT)
+    }
+  )
+
   // Break caught: point-estimate savings are used as the actionable threshold gate.
   it('switches only when conservative saving clears the threshold', () => {
     const result = recommend(goldenSnapshot(), goldenInput({ worthwhileThresholdSen: 200 }))
@@ -254,7 +268,7 @@ describe('PriceCatcher recommendation selection', () => {
 
   // Break caught: oldestObservationDate follows array order or takes the newest line date.
   it('serializes the oldest date across mixed-date basket lines', () => {
-    const snapshot = multiLineSnapshot()
+    const snapshot = { ...multiLineSnapshot(), compiledAt: '2026-08-02T03:00:00.000Z' as const }
     const selectedCell = (
       premiseCode: string,
       itemCode: string,
@@ -278,6 +292,7 @@ describe('PriceCatcher recommendation selection', () => {
       ]
     }
     const result = recommend(mixedDates, goldenInput({
+      evaluatedAt: '2026-08-02T03:00:00.000Z',
       lines: [
         { itemCode: '10', quantityHundredths: 100 },
         { itemCode: '20', quantityHundredths: 100 }

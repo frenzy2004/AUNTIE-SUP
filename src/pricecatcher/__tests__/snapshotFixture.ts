@@ -148,6 +148,24 @@ export function snapshotWithOldData(): PilotSnapshotV1 {
   return makeSnapshot({ dataAsOfDate: old, evidence: [cell('1', 600), cell('2', 500)] })
 }
 
+export function previousDaySnapshotWithStaleEvidence(scope: 'baseline' | 'candidate'): PilotSnapshotV1 {
+  const selectedCell = (premiseCode: string, selectedDate: LocalDate, priceSen: number): EvidenceCellV1 => ({
+    premiseCode,
+    itemCode: '10',
+    officialUnit: 'each',
+    observations: [
+      selectedDate === PRIOR ? { status: 'eligible', observedDate: PRIOR, priceSen } : { status: 'missing', observedDate: PRIOR },
+      selectedDate === DATE ? { status: 'eligible', observedDate: DATE, priceSen } : { status: 'missing', observedDate: DATE }
+    ]
+  })
+  return makeSnapshot({
+    evidence: [
+      selectedCell('1', scope === 'baseline' ? PRIOR : DATE, 600),
+      selectedCell('2', PRIOR, 400)
+    ]
+  })
+}
+
 export function inputWithOldClock(): RecommendationInput { return validInput({ evaluatedAt: '2026-08-03T02:54:59.000Z' }) }
 
 export function snapshotWithBadBaselineAndNoCandidate(): PilotSnapshotV1 {
