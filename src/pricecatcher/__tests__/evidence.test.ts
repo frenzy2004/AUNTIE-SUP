@@ -165,6 +165,199 @@ describe('evidence evaluation', () => {
     expect(Object.values(normalized!.fixedTripCostByPremiseCode!).every(Object.isFrozen)).toBe(true)
   })
 
+  // Break caught: normalization copies location before evaluatedAt while evaluation observes evaluatedAt first.
+  it('normalizes request composites in the evaluator semantic order', () => {
+    const buildProbe = () => {
+      const target = validInput()
+      const location = { ...target.location }
+      target.location = location
+      const events: string[] = []
+      const request = new Proxy(target, {
+        ownKeys: object => Reflect.ownKeys(object),
+        getOwnPropertyDescriptor: (object, key) => {
+          events.push(`top:${String(key)}`)
+          if (key === 'evaluatedAt') location.latitude = 999
+          return Reflect.getOwnPropertyDescriptor(object, key)
+        },
+        get: () => { throw new Error('raw request get must not run') }
+      })
+      return { events, request }
+    }
+
+    const normalization = buildProbe()
+    expect(normalizeRecommendationRequest(normalization.request)).toBeNull()
+    expect(normalization.events.indexOf('top:evaluatedAt')).toBeLessThan(normalization.events.indexOf('top:location'))
+
+    const evaluation = buildProbe()
+    expect(evaluateEvidence(makeSnapshot(), evaluation.request)).toMatchObject({
+      kind: 'insufficient-evidence', primaryReason: 'input-invalid'
+    })
+    expect(evaluation.events.indexOf('top:evaluatedAt')).toBeLessThan(evaluation.events.indexOf('top:location'))
+  })
+
+  // Break caught: normalization captures later composites before the evaluator's current semantic stage has accepted its value.
+  it('normalizes with the evaluator semantic-stage short circuits', () => {
+    const malformedClock = validInput({ evaluatedAt: 'not-an-instant' as never })
+    let clockLocationDescriptorCalls = 0
+    let clockLocationOwnKeysCalls = 0
+    malformedClock.location = new Proxy(malformedClock.location, {
+      ownKeys: target => { clockLocationOwnKeysCalls++; return Reflect.ownKeys(target) },
+      get: () => { throw new Error('raw location get must not run') }
+    })
+    const malformedClockRequest = new Proxy(malformedClock, {
+      getOwnPropertyDescriptor: (target, key) => {
+        if (key === 'location') clockLocationDescriptorCalls++
+        return Reflect.getOwnPropertyDescriptor(target, key)
+      },
+      get: () => { throw new Error('raw request get must not run') }
+    })
+    expect(normalizeRecommendationRequest(malformedClockRequest)).toBeNull()
+    expect(clockLocationDescriptorCalls).toBe(0)
+    expect(clockLocationOwnKeysCalls).toBe(0)
+
+    for (const location of [
+      { latitude: 999, longitude: 101, accuracyMetres: 10 },
+      { latitude: 3, longitude: 101, accuracyMetres: 101 }
+    ]) {
+      const request = validInput({ location })
+      let linesDescriptorCalls = 0
+      let linesOwnKeysCalls = 0
+      request.lines = new Proxy(request.lines, {
+        ownKeys: target => { linesOwnKeysCalls++; return Reflect.ownKeys(target) },
+        get: () => { throw new Error('raw lines get must not run') }
+      })
+      const trapped = new Proxy(request, {
+        getOwnPropertyDescriptor: (target, key) => {
+          if (key === 'lines') linesDescriptorCalls++
+          return Reflect.getOwnPropertyDescriptor(target, key)
+        },
+        get: () => { throw new Error('raw request get must not run') }
+      })
+
+      expect(normalizeRecommendationRequest(trapped), JSON.stringify(location)).toBeNull()
+      expect(linesDescriptorCalls, JSON.stringify(location)).toBe(0)
+      expect(linesOwnKeysCalls, JSON.stringify(location)).toBe(0)
+    }
+
+    const empty = validInput({ lines: [] })
+    let fixedOwnKeysCalls = 0
+    empty.fixedTripCostByPremiseCode = new Proxy(empty.fixedTripCostByPremiseCode!, {
+      ownKeys: target => { fixedOwnKeysCalls++; return Reflect.ownKeys(target) },
+      get: () => { throw new Error('raw fixed-cost map get must not run') }
+    })
+    const laterDescriptorCalls = new Map<PropertyKey, number>()
+    const emptyRequest = new Proxy(empty, {
+      getOwnPropertyDescriptor: (target, key) => {
+        if (['usualPremiseCode', 'basketScope', 'mode', 'fuelEfficiencyDeciKmPerL', 'fuelPriceSenPerL',
+          'fixedTripCostByPremiseCode', 'worthwhileThresholdSen'].includes(String(key))) {
+          laterDescriptorCalls.set(key, (laterDescriptorCalls.get(key) ?? 0) + 1)
+        }
+        return Reflect.getOwnPropertyDescriptor(target, key)
+      },
+      get: () => { throw new Error('raw request get must not run') }
+    })
+    expect(normalizeRecommendationRequest(emptyRequest)).toBeNull()
+    expect([...laterDescriptorCalls.values()]).toEqual([])
+    expect(fixedOwnKeysCalls).toBe(0)
+  })
+
+  // Break caught: direct normalization bulk-reflects a request-sized lines array before applying a finite copy budget.
+  it('rejects oversized normalization lines before their ownKeys trap', () => {
+    const target = new Array(100_001)
+    let lengthDescriptorCalls = 0
+    let ownKeysCalls = 0
+    const lines = new Proxy(target, {
+      ownKeys: array => { ownKeysCalls++; return Reflect.ownKeys(array) },
+      getOwnPropertyDescriptor: (array, key) => {
+        if (key === 'length') lengthDescriptorCalls++
+        return Reflect.getOwnPropertyDescriptor(array, key)
+      },
+      get: () => { throw new Error('raw lines get must not run') }
+    })
+    const request = validInput()
+    request.lines = lines as never
+
+    expect(normalizeRecommendationRequest(request)).toBeNull()
+    expect(lengthDescriptorCalls).toBe(1)
+    expect(ownKeysCalls).toBe(0)
+  })
+
+  // Break caught: a fresh line-local allowance ignores work already reserved by the root and location captures.
+  it('charges worst-case line work to the shared request budget before ownKeys', () => {
+    const target = new Array(33_330)
+    let lengthDescriptorCalls = 0
+    let ownKeysCalls = 0
+    const lines = new Proxy(target, {
+      ownKeys: array => { ownKeysCalls++; return Reflect.ownKeys(array) },
+      getOwnPropertyDescriptor: (array, key) => {
+        if (key === 'length') lengthDescriptorCalls++
+        return Reflect.getOwnPropertyDescriptor(array, key)
+      },
+      get: () => { throw new Error('raw lines get must not run') }
+    })
+    const request = validInput()
+    request.lines = lines as never
+
+    expect(normalizeRecommendationRequest(request)).toBeNull()
+    expect(lengthDescriptorCalls).toBe(1)
+    expect(ownKeysCalls).toBe(0)
+  })
+
+  // Break caught: fixed-cost capture reads every virtual entry descriptor before applying a finite request-copy budget.
+  it('rejects an oversized fixed-cost map before reading entry descriptors during normalization', () => {
+    const keys = Array.from({ length: 100_001 }, (_, index) => String(index + 1))
+    let ownKeysCalls = 0
+    let descriptorCalls = 0
+    const fixedCosts = new Proxy({}, {
+      ownKeys: () => { ownKeysCalls++; return keys },
+      getOwnPropertyDescriptor: () => {
+        descriptorCalls++
+        return { configurable: true, enumerable: true, value: { status: 'confirmed', amountSen: 0 }, writable: true }
+      },
+      get: () => { throw new Error('raw fixed-cost map get must not run') }
+    })
+    const request = validInput()
+    request.fixedTripCostByPremiseCode = fixedCosts as never
+
+    expect(normalizeRecommendationRequest(request)).toBeNull()
+    expect(ownKeysCalls).toBe(1)
+    expect(descriptorCalls).toBe(0)
+  })
+
+  // Break caught: lines and the fixed-cost map each receive an independent full copy allowance.
+  it('shares one copy-work budget across lines and fixed costs', () => {
+    const lineCount = 20_000
+    const lineKeys = Array.from({ length: lineCount }, (_, index) => String(index)).concat('length')
+    let lineOwnKeysCalls = 0
+    const lines = new Proxy(new Array(lineCount), {
+      ownKeys: () => { lineOwnKeysCalls++; return lineKeys },
+      getOwnPropertyDescriptor: (target, key) => key === 'length'
+        ? Reflect.getOwnPropertyDescriptor(target, key)
+        : { configurable: true, enumerable: true, value: { itemCode: '10', quantityHundredths: 1 }, writable: true },
+      get: () => { throw new Error('raw lines get must not run') }
+    })
+
+    const fixedKeys = Array.from({ length: 14_000 }, (_, index) => String(index + 1))
+    let fixedOwnKeysCalls = 0
+    let fixedDescriptorCalls = 0
+    const fixedCosts = new Proxy({}, {
+      ownKeys: () => { fixedOwnKeysCalls++; return fixedKeys },
+      getOwnPropertyDescriptor: () => {
+        fixedDescriptorCalls++
+        return { configurable: true, enumerable: true, value: { status: 'confirmed', amountSen: 0 }, writable: true }
+      },
+      get: () => { throw new Error('raw fixed-cost map get must not run') }
+    })
+    const request = validInput()
+    request.lines = lines as never
+    request.fixedTripCostByPremiseCode = fixedCosts as never
+
+    expect(normalizeRecommendationRequest(request)).toBeNull()
+    expect(lineOwnKeysCalls).toBe(1)
+    expect(fixedOwnKeysCalls).toBe(1)
+    expect(fixedDescriptorCalls).toBe(0)
+  })
+
   // Break caught: a later top descriptor can rewrite a line before nested capture.
   it('captures a line before reading the later mode descriptor', () => {
     const normalization = lineDescriptorMutationProbe(validInput())

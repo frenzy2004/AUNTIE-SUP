@@ -137,6 +137,30 @@ const expectOnlyIssue = (result: any, expected: { path: PropertyKey[], message: 
 }
 
 describe('runtime contracts', () => {
+  // Break caught: ordinary-record capture sorts and reflects an attacker-sized key set before applying its finite budget.
+  it('rejects oversized virtual records before reading any value descriptor', () => {
+    const keys = Array.from({ length: 100_001 }, (_, index) => `virtual${index}`)
+    for (const [name, schema] of [
+      ['request', RecommendationRequestSchema],
+      ['input', RecommendationInputSchema]
+    ] as const) {
+      let ownKeysCalls = 0
+      let descriptorCalls = 0
+      const record = new Proxy({}, {
+        ownKeys: () => { ownKeysCalls++; return keys },
+        getOwnPropertyDescriptor: (_target, key) => {
+          descriptorCalls++
+          return { configurable: true, enumerable: true, value: key, writable: true }
+        },
+        get: () => { throw new Error('raw virtual record get must not run') }
+      })
+
+      expect(schema.safeParse(record).success, name).toBe(false)
+      expect(ownKeysCalls, name).toBe(1)
+      expect(descriptorCalls, name).toBe(0)
+    }
+  })
+
   // Break caught: recursive request capture reflects every virtual sparse index before rejecting an over-budget array.
   it('rejects an oversized nested array before invoking its ownKeys trap', () => {
     for (const [name, schema, build] of [

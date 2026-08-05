@@ -3,11 +3,11 @@ import {
   CanonicalCodeSchema, ComparisonOnlyReasonSchema, ISOInstantSchema, LocalDateSchema,
   ReasonCodeSchema, SenSchema, SignedSenSchema
 } from './common'
+import { MAX_REQUEST_COPY_VALUES } from '../internal/request-copy-budget'
 
 const DATA_COPY_FAILED = Symbol('recommendation-data-copy-failed')
 const DANGEROUS_OWN_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
 const MAX_COPY_DEPTH = 64
-const MAX_COPY_VALUES = 100_000
 type DataCopyState = { active: WeakSet<object>; values: number }
 
 const defineData = (target: Record<string, unknown>, key: string, value: unknown): void => {
@@ -15,7 +15,7 @@ const defineData = (target: Record<string, unknown>, key: string, value: unknown
 }
 
 const copyUntrustedData = (value: unknown, state: DataCopyState, depth: number): unknown | typeof DATA_COPY_FAILED => {
-  if (++state.values > MAX_COPY_VALUES || depth > MAX_COPY_DEPTH) return DATA_COPY_FAILED
+  if (++state.values > MAX_REQUEST_COPY_VALUES || depth > MAX_COPY_DEPTH) return DATA_COPY_FAILED
   if (typeof value !== 'object' || value === null) {
     return typeof value === 'function' || typeof value === 'symbol' ? DATA_COPY_FAILED : value
   }
@@ -25,7 +25,7 @@ const copyUntrustedData = (value: unknown, state: DataCopyState, depth: number):
     if (Array.isArray(value)) {
       const lengthDescriptor = Object.getOwnPropertyDescriptor(value, 'length')
       if (!lengthDescriptor || lengthDescriptor.enumerable || !Object.prototype.hasOwnProperty.call(lengthDescriptor, 'value') ||
-          !Number.isSafeInteger(lengthDescriptor.value) || lengthDescriptor.value < 0 || lengthDescriptor.value > MAX_COPY_VALUES - state.values) {
+          !Number.isSafeInteger(lengthDescriptor.value) || lengthDescriptor.value < 0 || lengthDescriptor.value > MAX_REQUEST_COPY_VALUES - state.values) {
         return DATA_COPY_FAILED
       }
       if (Object.getPrototypeOf(value) !== Array.prototype) return DATA_COPY_FAILED
@@ -48,6 +48,7 @@ const copyUntrustedData = (value: unknown, state: DataCopyState, depth: number):
 
     if (Object.getPrototypeOf(value) !== Object.prototype) return DATA_COPY_FAILED
     const keys = Reflect.ownKeys(value)
+    if (keys.length > MAX_REQUEST_COPY_VALUES - state.values) return DATA_COPY_FAILED
     if (keys.some(key => typeof key !== 'string' || DANGEROUS_OWN_KEYS.has(key))) return DATA_COPY_FAILED
     const copy: Record<string, unknown> = {}
     const orderedKeys = (keys as string[]).sort((left, right) => left < right ? -1 : left > right ? 1 : 0)

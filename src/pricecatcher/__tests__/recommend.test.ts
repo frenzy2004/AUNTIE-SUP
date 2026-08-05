@@ -612,6 +612,27 @@ describe('PriceCatcher recommendation selection', () => {
     expect([...descriptorCalls.values()]).toEqual(Array.from({ length: Reflect.ownKeys(target).length }, () => 1))
   })
 
+  // Break caught: recommendation reflects every virtual fixed-cost entry before enforcing its finite request-copy budget.
+  it('rejects an oversized fixed-cost map before reading entry descriptors', () => {
+    const keys = Array.from({ length: 100_001 }, (_, index) => String(index + 1))
+    let ownKeysCalls = 0
+    let descriptorCalls = 0
+    const fixedCosts = new Proxy({}, {
+      ownKeys: () => { ownKeysCalls++; return keys },
+      getOwnPropertyDescriptor: () => {
+        descriptorCalls++
+        return { configurable: true, enumerable: true, value: { status: 'confirmed', amountSen: 0 }, writable: true }
+      },
+      get: () => { throw new Error('raw fixed-cost map get must not run') }
+    })
+    const request = goldenInput()
+    request.fixedTripCostByPremiseCode = fixedCosts as never
+
+    expect(recommend(goldenSnapshot(), request)).toEqual(INPUT_INVALID_RESULT)
+    expect(ownKeysCalls).toBe(1)
+    expect(descriptorCalls).toBe(0)
+  })
+
   // Break caught: recommendation observes a line rewrite caused by the later mode descriptor.
   it('recommends from the line captured before a later mode descriptor trap', () => {
     const probe = lineDescriptorMutationProbe(goldenInput())
