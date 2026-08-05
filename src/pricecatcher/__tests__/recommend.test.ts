@@ -633,6 +633,34 @@ describe('PriceCatcher recommendation selection', () => {
     expect(descriptorCalls).toBe(0)
   })
 
+  // Break caught: recommendation gives a staged invalid scalar a fresh 100,000-value public-schema copy budget.
+  it('does not reset the request budget before recommendation strict validation', () => {
+    const fixedKeys = Array.from({ length: 30_000 }, (_, index) => String(index + 1))
+    const basketScopeKeys = Array.from({ length: 20_000 }, (_, index) => `virtual${index}`)
+    let basketScopeOwnKeysCalls = 0
+    let basketScopeDescriptorCalls = 0
+    const request = goldenInput()
+    request.basketScope = new Proxy({}, {
+      ownKeys: () => { basketScopeOwnKeysCalls++; return basketScopeKeys },
+      getOwnPropertyDescriptor: (_target, key) => {
+        basketScopeDescriptorCalls++
+        return { configurable: true, enumerable: true, value: key, writable: true }
+      },
+      get: () => { throw new Error('raw basket-scope get must not run') }
+    }) as never
+    request.fixedTripCostByPremiseCode = new Proxy({}, {
+      ownKeys: () => fixedKeys,
+      getOwnPropertyDescriptor: () => ({
+        configurable: true, enumerable: true, value: { status: 'unknown' }, writable: true
+      }),
+      get: () => { throw new Error('raw fixed-cost map get must not run') }
+    }) as never
+
+    expect(recommend(goldenSnapshot(), request)).toEqual(INPUT_INVALID_RESULT)
+    expect(basketScopeOwnKeysCalls).toBe(0)
+    expect(basketScopeDescriptorCalls).toBe(0)
+  })
+
   // Break caught: recommendation observes a line rewrite caused by the later mode descriptor.
   it('recommends from the line captured before a later mode descriptor trap', () => {
     const probe = lineDescriptorMutationProbe(goldenInput())

@@ -4,13 +4,13 @@ import { canonicalizeCode, compareCanonicalCodes } from './ids'
 import { checkedAdd } from './money'
 import { CanonicalCodeSchema, ISOInstantSchema, type ISOInstant, type LocalDate, type ReasonCode, type Sen } from './contracts/common'
 import {
-  RecommendationInputSchema,
   type ExclusionCounts, type RecommendationInput, type RecommendationRequest, type ReasonDetail
 } from './contracts/recommendation'
 import type { EvidenceCellV1, ObservationEvidenceV1, PilotSnapshotV1 } from './contracts/snapshot'
 import {
   MAX_REQUEST_COPY_VALUES, createRequestCopyBudget, reserveRequestCopyValues, type RequestCopyBudget
 } from './internal/request-copy-budget'
+import { safeParseStagedRecommendationInput } from './internal/recommendation-input-schema'
 
 const FAILURE_ORDER = ['anomalous', 'insufficient-reference', 'stale', 'missing', 'date-mismatch'] as const
 const EXCLUSION_ORDER = ['outside-radius', ...FAILURE_ORDER] as const
@@ -276,7 +276,7 @@ const materializeRecommendationShell = (
 }
 
 const captureStrictRecommendationInputUnchecked = (shell: Record<string, unknown>): RecommendationInput | null => {
-  const strict = RecommendationInputSchema.safeParse(shell)
+  const strict = safeParseStagedRecommendationInput(shell)
   return strict.success ? freezeRecommendationInput(strict.data) : null
 }
 

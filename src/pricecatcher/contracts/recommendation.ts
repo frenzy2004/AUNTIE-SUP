@@ -1,9 +1,10 @@
 import { z } from 'zod'
 import {
-  CanonicalCodeSchema, ComparisonOnlyReasonSchema, ISOInstantSchema, LocalDateSchema,
+  CanonicalCodeSchema, ComparisonOnlyReasonSchema, LocalDateSchema,
   ReasonCodeSchema, SenSchema, SignedSenSchema
 } from './common'
 import { MAX_REQUEST_COPY_VALUES } from '../internal/request-copy-budget'
+import { RecommendationInputBaseSchema } from '../internal/recommendation-input-schema'
 
 const DATA_COPY_FAILED = Symbol('recommendation-data-copy-failed')
 const DANGEROUS_OWN_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
@@ -83,28 +84,6 @@ const RecommendationRequestBaseSchema = z.object({
 }).strict()
 export const RecommendationRequestSchema = z.preprocess(captureUntrustedData, RecommendationRequestBaseSchema)
 
-const RecommendationInputBaseSchema = z.object({
-  evaluatedAt: ISOInstantSchema,
-  location: z.object({
-    latitude: z.number().finite().min(-90).max(90),
-    longitude: z.number().finite().min(-180).max(180),
-    accuracyMetres: z.number().finite().min(0).max(100)
-  }).strict(),
-  usualPremiseCode: CanonicalCodeSchema,
-  basketScope: z.enum(['complete-trip', 'selected-items-only']),
-  lines: z.array(z.object({
-    itemCode: CanonicalCodeSchema,
-    quantityHundredths: z.number().int().safe().min(1).max(9900)
-  }).strict()).min(1),
-  mode: z.enum(['walk', 'drive']),
-  fuelEfficiencyDeciKmPerL: z.number().int().safe().min(10).max(500).optional(),
-  fuelPriceSenPerL: SenSchema.min(1).max(1000).optional(),
-  fixedTripCostByPremiseCode: z.record(CanonicalCodeSchema, z.discriminatedUnion('status', [
-    z.object({ status: z.literal('confirmed'), amountSen: SenSchema.max(10000) }).strict(),
-    z.object({ status: z.literal('unknown') }).strict()
-  ])).optional(),
-  worthwhileThresholdSen: SenSchema.max(10000).optional()
-}).strict()
 export const RecommendationInputSchema = z.preprocess(captureUntrustedData, RecommendationInputBaseSchema)
 
 export const ComparedLineV1Schema = z.object({

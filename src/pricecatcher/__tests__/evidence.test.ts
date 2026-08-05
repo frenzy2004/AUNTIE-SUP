@@ -358,6 +358,39 @@ describe('evidence evaluation', () => {
     expect(fixedDescriptorCalls).toBe(0)
   })
 
+  // Break caught: strict staged-shell parsing starts a fresh public-schema copy budget and deeply reflects an already-invalid scalar.
+  it.each([
+    ['normalization', (request: unknown) => normalizeRecommendationRequest(request), null],
+    ['evaluation', (request: unknown) => evaluateEvidence(makeSnapshot(), request), {
+      kind: 'insufficient-evidence', primaryReason: 'input-invalid', details: []
+    }]
+  ] as const)('does not reset the request budget before strict staged-shell %s', (name, run, expected) => {
+    const fixedKeys = Array.from({ length: 30_000 }, (_, index) => String(index + 1))
+    const basketScopeKeys = Array.from({ length: 20_000 }, (_, index) => `virtual${index}`)
+    let basketScopeOwnKeysCalls = 0
+    let basketScopeDescriptorCalls = 0
+    const request = validInput()
+    request.basketScope = new Proxy({}, {
+      ownKeys: () => { basketScopeOwnKeysCalls++; return basketScopeKeys },
+      getOwnPropertyDescriptor: (_target, key) => {
+        basketScopeDescriptorCalls++
+        return { configurable: true, enumerable: true, value: key, writable: true }
+      },
+      get: () => { throw new Error('raw basket-scope get must not run') }
+    }) as never
+    request.fixedTripCostByPremiseCode = new Proxy({}, {
+      ownKeys: () => fixedKeys,
+      getOwnPropertyDescriptor: () => ({
+        configurable: true, enumerable: true, value: { status: 'unknown' }, writable: true
+      }),
+      get: () => { throw new Error('raw fixed-cost map get must not run') }
+    }) as never
+
+    expect(run(request), name).toEqual(expected)
+    expect(basketScopeOwnKeysCalls, name).toBe(0)
+    expect(basketScopeDescriptorCalls, name).toBe(0)
+  })
+
   // Break caught: a later top descriptor can rewrite a line before nested capture.
   it('captures a line before reading the later mode descriptor', () => {
     const normalization = lineDescriptorMutationProbe(validInput())
