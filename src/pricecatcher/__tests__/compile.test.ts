@@ -440,6 +440,30 @@ describe('compiler provenance, chronology, and contextual validation', () => {
     expect(() => compilePilot(sameInstant)).not.toThrow()
   })
 
+  // Break caught: millisecond epoch conversion erases ordering between accepted arbitrary-precision UTC fractions.
+  it('preserves sub-millisecond source-retrieval ordering exactly', () => {
+    const compileWithInstants = (compiledAt: string, retrievedAt: string) => {
+      const input = makeCompilerInput()
+      input.compiledAt = compiledAt
+      ;(input.content.qualityReviewBasis as any).compiledAt = compiledAt
+      input.sourceLock.sources[0]!.manifest.retrievedAt = retrievedAt
+      return () => compilePilot(input)
+    }
+
+    expect(compileWithInstants(
+      '2026-08-03T04:00:00.0001Z',
+      '2026-08-03T04:00:00.0002Z'
+    )).toThrow()
+    expect(compileWithInstants(
+      '2026-08-03T04:00:00.0001Z',
+      '2026-08-03T04:00:00.0001000Z'
+    )).not.toThrow()
+    expect(compileWithInstants(
+      '2026-08-03T04:00:00.0002Z',
+      '2026-08-03T04:00:00.0001Z'
+    )).not.toThrow()
+  })
+
   // Break caught: final compilation or reproduction accepts a basis collected from a different non-review input identity.
   it('binds reviewInputSha256 in primary and normalized reproduction', () => {
     const input = makeCompilerInput()
@@ -529,10 +553,34 @@ describe('compiler lookup, cutoff, and retained-count invariants', () => {
       verifiedDigests: fixtureVerifiedDigests()
     })
     expect(canonicalizeCompilerJson(reproduced.audit)).toBe(canonicalizeCompilerJson(compiled.audit))
+    expect(canonicalizeCompilerJson(reproduced.normalizedSlice)).toBe(canonicalizeCompilerJson(compiled.normalizedSlice))
 
     const controlled = makeCompilerInput()
     ;(controlled.itemLookups[0] as any).item_group = '\u0007'
     expect(() => compilePilot(controlled)).toThrow()
+  })
+
+  // Break caught: normalization is used only to compare duplicate optional values, leaving a sole whitespace value raw.
+  it('canonicalizes sole Unicode-whitespace optional values without rewriting nonempty official text', () => {
+    const whitespaceOnly = makeCompilerInput()
+    ;(whitespaceOnly.itemLookups[0] as any).item_group = ' \u00a0\u2003 '
+    ;(whitespaceOnly.itemLookups[0] as any).item_category = '\u2002\u205f'
+    expect(compilePilot(whitespaceOnly).normalizedSlice.itemLookups[0]).toMatchObject({
+      itemGroup: '', itemCategory: ''
+    })
+
+    const officialText = makeCompilerInput()
+    ;(officialText.itemLookups[0] as any).item_group = '  Official\u00a0Group  '
+    ;(officialText.itemLookups[0] as any).item_category = 'Official\u2003Category'
+    expect(compilePilot(officialText).normalizedSlice.itemLookups[0]).toMatchObject({
+      itemGroup: '  Official\u00a0Group  ', itemCategory: 'Official\u2003Category'
+    })
+
+    for (const field of ['item_group', 'item_category'] as const) {
+      const controlled = makeCompilerInput()
+      ;(controlled.itemLookups[0] as any)[field] = '\u0007'
+      expect(() => compilePilot(controlled), field).toThrow()
+    }
   })
 
   // Break caught: future unknown rows alter retained artifacts or overlap the disjoint through/future counters.
@@ -974,6 +1022,35 @@ describe('long invalid-price equality classes', () => {
     expect(compiled.audit.exactDuplicateCount).toBe(1)
     if (invalid.reason !== 'invalid-price') throw new Error('expected invalid-price evidence')
     expect(invalid.rawPriceValues).toHaveLength(1)
+  })
+
+  // Break caught: prefix-bucket accumulation repeatedly spreads every prior long value, making grouping quadratic.
+  it('groups colliding invalid-price prefixes within a linear iterator-work bound', () => {
+    const rawValues = Array.from({ length: 32 }, (_, index) =>
+      `${commonPrefix}${index.toString(36).padStart(2, '0')}`
+    )
+    const input = attachCollectedQualityReviews(makeCompilerInput({
+      extraRows: rawValues.map(price => ({
+        ...pilotRow('2026-08-02'), premise_code: '3', price
+      }))
+    }))
+    const originalArrayIterator = Array.prototype[Symbol.iterator]
+    let markerYields = 0
+    const countingArrayIterator: typeof originalArrayIterator = function* <T>(this: T[]): Generator<T, undefined, unknown> {
+      for (const value of originalArrayIterator.call(this) as ArrayIterator<T>) {
+        if (typeof value === 'string' && value.startsWith(commonPrefix)) markerYields += 1
+        yield value
+      }
+      return undefined
+    }
+    Array.prototype[Symbol.iterator] = countingArrayIterator
+    try {
+      compilePilot(input)
+    } finally {
+      Array.prototype[Symbol.iterator] = originalArrayIterator
+    }
+
+    expect(markerYields).toBeLessThanOrEqual(rawValues.length * 3)
   })
 })
 

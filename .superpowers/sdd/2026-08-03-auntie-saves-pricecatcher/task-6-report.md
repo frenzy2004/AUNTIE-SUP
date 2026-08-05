@@ -58,9 +58,9 @@ Every added test names the production mutation it kills. Literal counts/dates/ra
 - `npm run typecheck:saves`: all four TypeScript projects passed.
 - `git diff --check`: passed before report creation.
 
-Two repository/environment gates cannot complete in this sandbox:
+One repository gate and one sandbox-only restriction were observed during the initial implementation run:
 
-- `npm run test:saves` and `npm test` each reached all tests but the existing `saves-node20-workflow.test.ts` child exited 1 because `tsx` could not create its local IPC socket: `listen EPERM .../tsx-501/*.pipe`. The same `npm run data:saves:smoke` command reproduces the sandbox error. Escalation was requested and aborted/declined. The Saves run was 518/519; the default run was 532/533, with that single shared infrastructure failure.
+- `npm run test:saves` and `npm test` initially reached all tests but the existing `saves-node20-workflow.test.ts` child exited 1 because the sandbox forbade `tsx` from creating its local IPC socket: `listen EPERM .../tsx-501/*.pipe`. A later permitted controller run completed the full suite successfully; this was an execution-environment restriction, not a product failure.
 - `npm run build:saves` passed all four typechecks and then Vite failed before bundling because `vite.saves.config.ts` is absent from this worktree and from the Task-6 base tree. `package.json` references the missing file. No out-of-scope config was added.
 
 ## Self-review
@@ -75,7 +75,7 @@ Two repository/environment gates cannot complete in this sandbox:
 ## Concerns for independent review
 
 - The pure compiler treats digest strings (including review-host-policy and report byte digests) as adapter-attested values; it binds and compares them but intentionally does not hash bytes. Task 7 must compute/verify those digests before invocation.
-- Full-suite and bundle completion are blocked by inherited sandbox/config conditions described above; focused/domain/type gates are clean.
+- The default sandbox cannot run the Node/tsx smoke child, but permitted controller runs complete the full suite. `npm run build:saves` remains blocked by the inherited missing `vite.saves.config.ts`; the ordinary production build passes.
 - The compiler files are large because the brief centralizes strict schemas, pure compilation, collection, reproduction, chronology, desk gates, and provenance in Task 6. No unrelated refactor was included.
 
 ## Fix round 1 — compiler reproduction hardening
@@ -84,15 +84,15 @@ Status remains in progress pending fresh independent review.
 
 The first focused RED added semantic normalized-slice mutations for lookup membership, curated membership, exact unit binding, Selangor/type eligibility, pilot membership, H−1 overlap, and provenance uniqueness within each of the four row arrays. The targeted run collected 120 tests and produced the intended 12 failures; the unchanged cross-array H−1 provenance case remained accepted. After the semantic row validator and per-array uniqueness refinements were added, the focused group passed 15/15.
 
-The second RED expanded the compiler file to 135 tests and produced 13 intended failures: six numeric-IPv4 authority/policy cases, canonical review ordering, two invalid-code/wrong-month boundary cases, mixed-fraction instant ordering, absent optional item fields, source-kind/mode binding, and distinct long invalid-price equality. A final optional-field RED then isolated missing-versus-whitespace duplicate comparison while retaining control-character rejection. Each focused RED was followed by its GREEN before wider verification.
+The second RED expanded the compiler file to 135 tests and produced 13 intended failures: six numeric-IPv4 authority/policy cases, canonical review ordering, two invalid-code/wrong-month boundary cases, mixed-fraction instant ordering at millisecond precision, absent optional item fields, source-kind/mode binding, and distinct long invalid-price equality. A final optional-field RED then isolated missing-versus-whitespace duplicate comparison while retaining control-character rejection. It did not cover a sole whitespace-only optional value. Each focused RED was followed by its GREEN before wider verification.
 
 The correction now:
 
 - Revalidates every valid/rejected reference/pilot row against authoritative lookup existence, exact lookup unit, curated item membership, normalized Selangor and allowed premise type, and curated pilot premise membership. Curated valid and rejected H−1 reference/pilot rows must overlap exactly.
 - Rejects duplicate provenance independently inside each normalized row array while continuing to permit the intentional identical reference/pilot overlap.
-- Orders source retrieval and compilation as parsed epochs, including mixed fractional precisions, and checks a valid row date against its transaction manifest month before invalid-code exclusion in both final compilation and audit-only collection.
+- Orders source retrieval and compilation as parsed millisecond epochs, fixing lexical mixed-precision ordering but not yet preserving accepted sub-millisecond fractions, and checks a valid row date against its transaction manifest month before invalid-code exclusion in both final compilation and audit-only collection.
 - Rejects dotted, shortened, octal-looking, and hexadecimal-looking numeric IPv4 authority forms in both source authority extraction and the retailer host policy.
-- Maps absent or whitespace-only optional item group/category fields to canonical empty strings, compares missing/whitespace duplicates equally, reproduces empty values, and still rejects control characters.
+- Maps absent optional item group/category fields to canonical empty strings, compares missing/whitespace duplicates equally, reproduces those duplicate-derived empty values, and still rejects control characters. A sole whitespace-only value remained raw and was repaired in fix round 2.
 - Binds fixture mode to synthetic-fixture source locks and desk-demo mode to official source locks in compile, collection, and normalized-slice schemas.
 - Canonical-sorts premise, item, and nested quality review arrays by reviewer ID in their shared schema parse outputs.
 - Keeps full invalid raw-price equality classes until a deterministic per-cell bounded representation is assigned. Distinct long values sharing the first 64 characters—and values colliding with a candidate suffix token—remain distinct; identical long values remain duplicates; normalized reproduction emits byte-equivalent audit output.
@@ -121,4 +121,41 @@ $ rg -n <high-confidence credential/private-key patterns> <five changed files>
 
 $ rg -n -P <nonprinting-byte pattern> <five changed files>
 # no findings (rg exit 1)
+```
+
+Independent controller verification after fix round 1 passed the complete permitted suite: 564/564 tests.
+
+## Fix round 2 — exact chronology, canonical optional empties, and bounded prefix grouping
+
+Status remains in progress pending fresh independent review. Changes are intentionally uncommitted and unpushed.
+
+Three isolated REDs were captured before their respective production edits:
+
+- The sub-millisecond chronology test collected 137 compiler tests and failed only because `compiledAt = 2026-08-03T04:00:00.0001Z` accepted `retrievedAt = 2026-08-03T04:00:00.0002Z`; equality with `.0001000Z` and reverse ordering were retained as acceptance guards.
+- The standalone optional-field test expanded the file to 138 tests and failed with raw Unicode whitespace in both `itemGroup` and `itemCategory`; it also guards preservation of nonempty official strings and `Cc` rejection for both fields.
+- The deterministic prefix-grouping work test expanded the file to 139 tests and failed with 561 marker iterator yields against a linear bound of 96. It measures real grouping work without a timing threshold or source-text assertion.
+
+The correction now:
+
+- Compares accepted canonical UTC-Z instants by their fixed-width whole-second key and then arbitrary fractional digits with implicit zero padding. No floating-point or millisecond conversion is used; omitted seconds, omitted fractions, unequal fractional precision, equality, and reverse ordering retain their existing valid semantics.
+- Canonicalizes a sole Unicode-whitespace-only optional `item_group` or `item_category` to `''` at lookup parsing, while preserving every nonempty official string byte-for-byte. Missing-versus-whitespace duplicates remain equal, normalized-slice reproduction remains byte-stable, and `Cc` controls remain rejected.
+- Mutates each local long-value prefix bucket with `push` instead of rebuilding it by repeated array spread. The bounded invalid-price representations, equality classes, audit values, and reproduction bytes are unchanged.
+
+Fresh verification after the last source/test edit:
+
+```text
+$ npm run test:saves -- src/pricecatcher/__tests__/compile.test.ts
+# 1 file, 139 tests passed
+
+$ npm run test:saves -- src/pricecatcher
+# 7 files, 551 tests passed
+
+$ npm run typecheck:saves
+# all four configured TypeScript projects passed
+
+$ npm run build
+# Electron/Vite main, preload, and renderer builds passed
+
+$ npm test  # permitted controller run for the Node/tsx IPC smoke child
+# 12 files, 567 tests passed
 ```

@@ -99,6 +99,28 @@ interface ParsedCore {
 }
 
 const compareText = (left: string, right: string): number => left < right ? -1 : left > right ? 1 : 0
+const UTC_INSTANT_PARTS_PATTERN = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2})(?::(\d{2})(?:\.(\d+))?)?Z$/
+const splitUtcInstant = (value: string): { wholeSecond: string, fractionalSecond: string } => {
+  const match = UTC_INSTANT_PARTS_PATTERN.exec(value)
+  if (!match) throw new RangeError('invalid canonical UTC instant')
+  return {
+    wholeSecond: `${match[1]}:${match[2] ?? '00'}`,
+    fractionalSecond: match[3] ?? ''
+  }
+}
+const compareUtcInstants = (left: string, right: string): number => {
+  const leftParts = splitUtcInstant(left)
+  const rightParts = splitUtcInstant(right)
+  const wholeSecondDifference = compareText(leftParts.wholeSecond, rightParts.wholeSecond)
+  if (wholeSecondDifference !== 0) return wholeSecondDifference
+  const precision = Math.max(leftParts.fractionalSecond.length, rightParts.fractionalSecond.length)
+  for (let index = 0; index < precision; index += 1) {
+    const difference = (leftParts.fractionalSecond[index] ?? '0').charCodeAt(0) -
+      (rightParts.fractionalSecond[index] ?? '0').charCodeAt(0)
+    if (difference !== 0) return difference
+  }
+  return 0
+}
 const rowRef = (row: { sourceManifestIndex: number, rowNumber: number }) => ({
   sourceManifestIndex: row.sourceManifestIndex, rowNumber: row.rowNumber
 })
@@ -184,7 +206,11 @@ const parseItemLookups = (values: unknown[]): ItemLookup[] => collapseLookups(va
   const itemGroup = raw.item_group === undefined ? '' : raw.item_group
   const itemCategory = raw.item_category === undefined ? '' : raw.item_category
   if (typeof itemGroup !== 'string' || typeof itemCategory !== 'string') throw new RangeError('item lookup group/category must be text')
-  return { code, name: raw.item as string, unit: raw.unit as string, itemGroup, itemCategory }
+  return {
+    code, name: raw.item as string, unit: raw.unit as string,
+    itemGroup: normalizeOptionalLookupToken(itemGroup) === '' ? '' : itemGroup,
+    itemCategory: normalizeOptionalLookupToken(itemCategory) === '' ? '' : itemCategory
+  }
 }), itemLookupFields, 'item')
 
 const validatePrivateContent = (
@@ -279,8 +305,7 @@ const validateSourceContext = (input: CompilePilotInput): void => {
   if (canonicalSources.some((source, index) => canonicalKey(source) !== canonicalKey(input.sourceLock.sources[index]))) {
     throw new RangeError('source lock sources must use canonical role and month order')
   }
-  const compiledEpoch = Date.parse(input.compiledAt)
-  if (input.sourceLock.sources.some(source => Date.parse(source.manifest.retrievedAt) > compiledEpoch)) {
+  if (input.sourceLock.sources.some(source => compareUtcInstants(source.manifest.retrievedAt, input.compiledAt) > 0)) {
     throw new RangeError('source retrieval must not postdate compilation')
   }
 }
@@ -405,7 +430,9 @@ const encodeInvalidPriceClasses = (rows: readonly SourcedInvalidObservation[]): 
     const longValuesByPrefix = new Map<string, string[]>()
     for (const value of rawValues.filter(candidate => candidate.length > MAX_INVALID_RAW_PRICE_LENGTH)) {
       const prefix = value.slice(0, MAX_INVALID_RAW_PRICE_LENGTH)
-      longValuesByPrefix.set(prefix, [...(longValuesByPrefix.get(prefix) ?? []), value])
+      const prefixBucket = longValuesByPrefix.get(prefix)
+      if (prefixBucket) prefixBucket.push(value)
+      else longValuesByPrefix.set(prefix, [value])
     }
     for (const [prefix, collidingValues] of [...longValuesByPrefix.entries()].sort(([left], [right]) => compareText(left, right))) {
       if (collidingValues.length === 1 && !occupied.has(prefix)) {
