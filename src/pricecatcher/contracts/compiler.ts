@@ -106,6 +106,9 @@ const PrivatePremisePassSchema = z.object({
   closureSignal: z.enum(['none', 'open', 'closed']), sources: z.array(ReviewSourceSchema).min(2)
 }).strict()
 
+const canonicalSortReviewerPasses = <T extends { reviewerId: string }>(reviews: T[]): T[] =>
+  [...reviews].sort((left, right) => left.reviewerId < right.reviewerId ? -1 : left.reviewerId > right.reviewerId ? 1 : 0)
+
 export const PrivatePremiseReviewSchema = z.object({
   code: CanonicalCodeSchema, officialName: z.string().min(1), displayName: z.string().min(1),
   address: z.string().min(1), premiseType: z.string().min(1),
@@ -123,7 +126,7 @@ export const PrivatePremiseReviewSchema = z.object({
   if (value.verificationExpiresOn !== addLocalDates(value.verifiedOn, 90)) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ['verificationExpiresOn'], message: 'must be exactly 90 dates after verification' })
   }
-})
+}).transform(value => ({ ...value, reviews: canonicalSortReviewerPasses(value.reviews) }))
 
 const PrivateItemPassSchema = z.object({
   reviewerId: ReviewerIdSchema, reviewedOn: LocalDateSchema, status: z.literal('approved'),
@@ -139,7 +142,7 @@ export const PrivateItemReviewSchema = z.object({
   if (new Set(value.reviews.map(review => review.reviewerId)).size !== 2) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ['reviews'], message: 'item reviews require two distinct reviewers' })
   }
-})
+}).transform(value => ({ ...value, reviews: canonicalSortReviewerPasses(value.reviews) }))
 
 export const PrivateMicrozoneSchema = z.object({
   id: z.string().regex(/^[a-z0-9-]+$/), label: z.string().min(1),
@@ -213,7 +216,7 @@ export const QualityReviewDispositionSchema = z.object({
   if (value.disposition !== expected) context.addIssue({ code: z.ZodIssueCode.custom, path: ['disposition'], message: 'disposition does not match review-basis kind' })
   const later = [...value.reviews.map(review => review.reviewedOn)].sort().at(-1)
   if (value.reviewedOn !== later) context.addIssue({ code: z.ZodIssueCode.custom, path: ['reviewedOn'], message: 'must equal the later nested review date' })
-})
+}).transform(value => ({ ...value, reviews: canonicalSortReviewerPasses(value.reviews) }))
 
 export const QualityReviewBasisFileV1Schema = z.object({
   schemaVersion: z.literal(1), transformVersion: TransformVersionSchema, compiledAt: ISOInstantSchema,
@@ -353,11 +356,21 @@ export const NormalizedSourceSliceV1Schema = z.object({
   if (!codesAreSortedUnique(value.itemLookups.map(row => row.code))) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ['itemLookups'], message: 'lookup codes must be sorted and unique' })
   }
-  if (value.publicationMode === 'fixture' && (value.sourceWindow !== 'public' || value.reviewHostPolicySha256 !== undefined)) {
-    context.addIssue({ code: z.ZodIssueCode.custom, path: ['publicationMode'], message: 'fixture slices require public lock and forbid host policy' })
+  for (const field of ['referenceRows', 'pilotRows', 'rejectedReferenceRows', 'rejectedPilotRows'] as const) {
+    const provenance = value[field].map(row => `${row.sourceManifestIndex}:${row.rowNumber}`)
+    if (new Set(provenance).size !== provenance.length) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [field],
+        message: 'source-row provenance must be unique within each normalized slice array'
+      })
+    }
   }
-  if (value.publicationMode === 'desk-demo' && (value.sourceWindow !== 'feasibility' || value.reviewHostPolicySha256 === undefined)) {
-    context.addIssue({ code: z.ZodIssueCode.custom, path: ['publicationMode'], message: 'desk slices require feasibility lock and host policy digest' })
+  if (value.publicationMode === 'fixture' && (value.sourceWindow !== 'public' || value.sourceLock.sourceKind !== 'synthetic-fixture' || value.reviewHostPolicySha256 !== undefined)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['publicationMode'], message: 'fixture slices require a synthetic public lock and forbid host policy' })
+  }
+  if (value.publicationMode === 'desk-demo' && (value.sourceWindow !== 'feasibility' || value.sourceLock.sourceKind !== 'official' || value.reviewHostPolicySha256 === undefined)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['publicationMode'], message: 'desk slices require an official feasibility lock and host policy digest' })
   }
 })
 
@@ -393,10 +406,12 @@ const refineModeAndReports = (value: {
   if (feasibilityPair[0] !== feasibilityPair[1]) context.addIssue({ code: z.ZodIssueCode.custom, path: ['content', 'feasibilityReport'], message: 'report and digest must appear together' })
   if (value.publicationMode === 'fixture') {
     if (value.sourceLock.window !== 'public') context.addIssue({ code: z.ZodIssueCode.custom, path: ['sourceLock'], message: 'fixture requires exact public source lock' })
+    if (value.sourceLock.sourceKind !== 'synthetic-fixture') context.addIssue({ code: z.ZodIssueCode.custom, path: ['sourceLock'], message: 'fixture requires synthetic source kind' })
     if (hasAnyGateField) context.addIssue({ code: z.ZodIssueCode.custom, path: ['content'], message: 'fixture forbids desk reports' })
     if (value.reviewHostPolicy !== undefined || value.reviewHostPolicySha256 !== undefined) context.addIssue({ code: z.ZodIssueCode.custom, path: ['reviewHostPolicy'], message: 'fixture forbids retailer policy' })
   } else {
     if (value.sourceLock.window !== 'feasibility') context.addIssue({ code: z.ZodIssueCode.custom, path: ['sourceLock'], message: 'desk demo requires feasibility source lock' })
+    if (value.sourceLock.sourceKind !== 'official') context.addIssue({ code: z.ZodIssueCode.custom, path: ['sourceLock'], message: 'desk demo requires official source kind' })
     if (!hasAllGateFields) context.addIssue({ code: z.ZodIssueCode.custom, path: ['content'], message: 'desk demo requires both reports and digests' })
     if (value.reviewHostPolicy === undefined || value.reviewHostPolicySha256 === undefined) context.addIssue({ code: z.ZodIssueCode.custom, path: ['reviewHostPolicy'], message: 'desk demo requires retailer policy and digest' })
   }

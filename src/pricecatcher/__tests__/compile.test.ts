@@ -7,7 +7,9 @@ import {
 } from '../compile'
 import {
   AuditCellSchema, CompilerAuditV1Schema, PrivateItemReviewSchema,
-  PrivatePremiseReviewSchema, QualityReviewDispositionSchema, ReviewHttpsUrlSchema
+  NormalizedSourceSliceV1Schema, PrivatePremiseReviewSchema,
+  QualityReviewDispositionSchema, ReviewHttpsUrlSchema,
+  type CompilePilotInput
 } from '../contracts/compiler'
 import { PilotSnapshotV1Schema } from '../contracts/snapshot'
 import { collapseObservationRows } from '../quality'
@@ -24,6 +26,31 @@ const syntheticSource = (url: string) => ({
   url, accessedOn: '2026-08-01', redistribution: 'synthetic-cc0' as const,
   attributionCode: 'synthetic-fixture' as const
 })
+
+const attachCollectedQualityReviews = (input: CompilePilotInput): CompilePilotInput => {
+  const { basis } = collectQualityReviewBasis(makeCollectionInput(input))
+  input.content.qualityReviewBasis = basis
+  input.content.qualityReviews = {
+    schemaVersion: 1,
+    qualityReviewBasisSha256: input.contentDigests.qualityReviewBasis,
+    qualityReviews: basis.qualityFlags.map(reviewBasis => {
+      const disposition = reviewBasis.flag === 'rejected-cell' ? 'confirmed-exclusion' : 'confirmed-eligible'
+      const reasonCode = reviewBasis.flag === 'rejected-cell'
+        ? 'quality-exclusion-confirmed'
+        : 'low-price-eligibility-confirmed'
+      return {
+        reviewBasis,
+        disposition,
+        reviewedOn: '2026-08-02',
+        reviews: [
+          { reviewerId: 'reviewer-a', reviewedOn: '2026-08-01', disposition, reasonCodes: [reasonCode] },
+          { reviewerId: 'reviewer-b', reviewedOn: '2026-08-02', disposition, reasonCodes: [reasonCode] }
+        ]
+      }
+    })
+  }
+  return input
+}
 
 describe('PriceCatcher compiler', () => {
   // Break caught: the compiler narrows reference construction to curated pilot premises.
@@ -107,11 +134,21 @@ describe('compiler review input contracts', () => {
     'https://user@data.gov.my/evidence',
     'https://data.gov.my:443/evidence',
     'https://127.0.0.1/evidence',
+    'https://127.1/evidence',
+    'https://0177.0.0.1/evidence',
+    'https://0x7f.1/evidence',
     'https://[::1]/evidence',
     'https://data.gov.my./evidence',
     'https://dāta.gov.my/evidence'
   ])('rejects non-default DNS authority %s', url => {
     expect(extractReviewSourceAuthority(url)).toBeNull()
+  })
+
+  // Break caught: numeric IPv4 aliases are accepted as retailer DNS names even though URL stacks resolve them as IP addresses.
+  it.each(['127.1', '0177.0.0.1', '0x7f.1'])('rejects numeric IPv4 retailer host %s', host => {
+    expect(ReviewHostPolicyV1Schema.safeParse({
+      version: '2026-08-03-v1', retailerHosts: [host]
+    }).success).toBe(false)
   })
 
   // Break caught: host matching uses substring/suffix matching without an exact dot boundary or fails uppercase normalization.
@@ -147,6 +184,20 @@ describe('compiler review input contracts', () => {
     expect(normalizeQualifierKey('  LARGE\u2003PACK ')).toBe('large pack')
     expect(() => normalizeReviewTextKey(' \u0007 ')).toThrow()
     expect(() => normalizeQualifierKey('   ')).toThrow()
+  })
+
+  // Break caught: shared review schemas validate reviewer sets but preserve caller order in their parsed output.
+  it('canonical-sorts every shared two-review array by reviewerId', () => {
+    const input = makeCompilerInput()
+    const premise = structuredClone(input.content.premises[0]) as any
+    const item = structuredClone(input.content.items[0]) as any
+    const disposition = structuredClone((input.content.qualityReviews as any).qualityReviews[0])
+    premise.reviews.reverse()
+    item.reviews.reverse()
+    disposition.reviews.reverse()
+    expect(PrivatePremiseReviewSchema.parse(premise).reviews.map(review => review.reviewerId)).toEqual(['reviewer-a', 'reviewer-b'])
+    expect(PrivateItemReviewSchema.parse(item).reviews.map(review => review.reviewerId)).toEqual(['reviewer-a', 'reviewer-b'])
+    expect(QualityReviewDispositionSchema.parse(disposition).reviews.map(review => review.reviewerId)).toEqual(['reviewer-a', 'reviewer-b'])
   })
 })
 
@@ -327,6 +378,21 @@ describe('compiler provenance, chronology, and contextual validation', () => {
     })).toThrow()
   })
 
+  // Break caught: a valid date with an invalid code bypasses manifest-month provenance checking.
+  it.each([
+    ['primary compilation', (input: CompilePilotInput) => compilePilot(input)],
+    ['audit-only collection', (input: CompilePilotInput) => collectQualityReviewBasis(makeCollectionInput(input))]
+  ])('checks manifest month before invalid-code exclusion in %s', (_name, run) => {
+    const input = makeCompilerInput()
+    const augustSource = input.sourceLock.sources[1]!
+    augustSource.manifest.rowCount += 1
+    input.transactions.push({
+      date: '2026-07-15', premise_code: 'invalid-code', item_code: '10', price: '10.00',
+      sourceManifestIndex: 1, rowNumber: augustSource.manifest.rowCount
+    })
+    expect(() => run(input)).toThrow()
+  })
+
   // Break caught: one chronology relation is checked only in primary compilation, or equality-at-expiry is rejected.
   it('enforces source, review, verification, expiry, and disposition chronology', () => {
     const retrievedLate = makeCompilerInput()
@@ -357,6 +423,21 @@ describe('compiler provenance, chronology, and contextual validation', () => {
     premise.verifiedOn = '2026-05-05'
     premise.verificationExpiresOn = '2026-08-03'
     expect(() => compilePilot(expiryAtCompileDate)).not.toThrow()
+  })
+
+  // Break caught: ISO instants are ordered lexically, which misorders equal or adjacent mixed fractional precisions.
+  it('orders source retrieval and compilation by epoch across fractional precision', () => {
+    const retrievedLater = makeCompilerInput()
+    retrievedLater.compiledAt = '2026-08-03T04:00:00Z'
+    ;(retrievedLater.content.qualityReviewBasis as any).compiledAt = retrievedLater.compiledAt
+    retrievedLater.sourceLock.sources[0]!.manifest.retrievedAt = '2026-08-03T04:00:00.001Z'
+    expect(() => compilePilot(retrievedLater)).toThrow()
+
+    const sameInstant = makeCompilerInput()
+    sameInstant.compiledAt = '2026-08-03T04:00:00.100Z'
+    ;(sameInstant.content.qualityReviewBasis as any).compiledAt = sameInstant.compiledAt
+    sameInstant.sourceLock.sources[0]!.manifest.retrievedAt = '2026-08-03T04:00:00.1Z'
+    expect(() => compilePilot(sameInstant)).not.toThrow()
   })
 
   // Break caught: final compilation or reproduction accepts a basis collected from a different non-review input identity.
@@ -427,6 +508,31 @@ describe('compiler lookup, cutoff, and retained-count invariants', () => {
       else input.itemLookups.push({ ...(input.itemLookups[0] as any), item_code: '10.0', [field]: 'conflict' })
       expect(() => compilePilot(input), `${kind} ${field}`).toThrow()
     }
+  })
+
+  // Break caught: absent optional item group/category values reach non-empty token normalization and cannot reproduce.
+  it('maps absent optional item lookup fields to stable empty strings in primary and reproduction', () => {
+    const input = makeCompilerInput()
+    delete (input.itemLookups[0] as any).item_group
+    delete (input.itemLookups[0] as any).item_category
+    input.itemLookups.push({
+      item_code: '10.0', item: 'Fixture Item', unit: 'each',
+      item_group: ' \u00a0 ', item_category: '\u2003'
+    })
+    const compiled = compilePilot(input)
+    expect(compiled.normalizedSlice.itemLookups).toEqual([{
+      code: '10', name: 'Fixture Item', unit: 'each', itemGroup: '', itemCategory: ''
+    }])
+    const reproduced = compilePilotFromNormalizedSlice({
+      slice: compiled.normalizedSlice,
+      parsedContent: fixtureParsedContent(),
+      verifiedDigests: fixtureVerifiedDigests()
+    })
+    expect(canonicalizeCompilerJson(reproduced.audit)).toBe(canonicalizeCompilerJson(compiled.audit))
+
+    const controlled = makeCompilerInput()
+    ;(controlled.itemLookups[0] as any).item_group = '\u0007'
+    expect(() => compilePilot(controlled)).toThrow()
   })
 
   // Break caught: future unknown rows alter retained artifacts or overlap the disjoint through/future counters.
@@ -502,6 +608,35 @@ describe('desk-demo compiler gates', () => {
     expect(() => compilePilot(wrongPublicStart)).toThrow()
   })
 
+  // Break caught: publication mode is bound to lock window but not to synthetic versus official source kind.
+  it('binds fixture to synthetic locks and desk-demo to official locks at every boundary', () => {
+    const officialFixture = makeCompilerInput() as any
+    officialFixture.sourceLock.sourceKind = 'official'
+    for (const source of officialFixture.sourceLock.sources) {
+      source.manifest.url = source.role === 'transactions'
+        ? `https://storage.data.gov.my/pricecatcher/pricecatcher_${source.yearMonth}.csv`
+        : source.role === 'premise-lookup'
+          ? 'https://storage.data.gov.my/pricecatcher/lookup_premise.csv'
+          : 'https://storage.data.gov.my/pricecatcher/lookup_item.csv'
+    }
+    expect(() => compilePilot(officialFixture)).toThrow()
+
+    const syntheticDesk = makeDeskCompilerInput() as any
+    syntheticDesk.sourceLock.sourceKind = 'synthetic-fixture'
+    syntheticDesk.sourceLock.sources.forEach((source: any, index: number) => {
+      source.manifest.url = `https://source-${index}.fixture.test/source.csv`
+    })
+    expect(() => collectQualityReviewBasis(makeCollectionInput(syntheticDesk))).toThrow()
+
+    const fixtureSlice = structuredClone(compilePilot(makeCompilerInput()).normalizedSlice) as any
+    fixtureSlice.sourceLock = structuredClone(officialFixture.sourceLock)
+    expect(NormalizedSourceSliceV1Schema.safeParse(fixtureSlice).success).toBe(false)
+
+    const deskSlice = structuredClone(compilePilot(makeDeskCompilerInput()).normalizedSlice) as any
+    deskSlice.sourceLock = structuredClone(syntheticDesk.sourceLock)
+    expect(NormalizedSourceSliceV1Schema.safeParse(deskSlice).success).toBe(false)
+  })
+
   // Break caught: desk output ignores report pass/date/hash/transform bindings.
   it.each([
     ['coverage pass', (input: any) => { input.content.coverageReport.passesCoverageCandidateGate = false }],
@@ -543,6 +678,29 @@ describe('desk-demo compiler gates', () => {
       slice: compiled.normalizedSlice,
       parsedContent,
       parsedCoverageReport: changed,
+      parsedFeasibilityReport: input.content.feasibilityReport,
+      verifiedDigests
+    })).toThrow()
+  })
+
+  // Break caught: normalized reproduction accepts a policy digest record that differs from the committed slice.
+  it('rejects a mismatched review-host-policy digest record during reproduction', () => {
+    const input = makeDeskCompilerInput()
+    const compiled = compilePilot(input)
+    const parsedContent = { ...structuredClone(input.content), reviewHostPolicy: structuredClone(input.reviewHostPolicy) }
+    delete (parsedContent as any).coverageReport
+    delete (parsedContent as any).feasibilityReport
+    const verifiedDigests = {
+      sourceLockSha256: input.sourceLockSha256,
+      effectiveInputSha256: input.effectiveInputSha256,
+      reviewInputSha256: input.reviewInputSha256,
+      reviewHostPolicySha256: 'c'.repeat(64),
+      contentDigests: structuredClone(input.contentDigests)
+    }
+    expect(() => compilePilotFromNormalizedSlice({
+      slice: compiled.normalizedSlice,
+      parsedContent,
+      parsedCoverageReport: input.content.coverageReport,
       parsedFeasibilityReport: input.content.feasibilityReport,
       verifiedDigests
     })).toThrow()
@@ -766,6 +924,59 @@ describe('duplicate-count overlap', () => {
   })
 })
 
+describe('long invalid-price equality classes', () => {
+  const commonPrefix = 'x'.repeat(64)
+
+  // Break caught: pretruncation merges distinct invalid raw prices before exact-duplicate classification.
+  it('keeps distinct long raw prices with a common first 64 characters in separate bounded classes', () => {
+    const input = attachCollectedQualityReviews(makeCompilerInput({
+      extraRows: [
+        { ...pilotRow('2026-08-02'), premise_code: '3', price: `${commonPrefix}a` },
+        { ...pilotRow('2026-08-02'), premise_code: '3', price: `${commonPrefix}b` },
+        { ...pilotRow('2026-08-02'), premise_code: '3', price: `${'x'.repeat(62)}~0` }
+      ]
+    }))
+    const compiled = compilePilot(input)
+    const invalid = compiled.audit.rejectedCells.find(cell =>
+      cell.reason === 'invalid-price' && cell.premiseCode === '3' && cell.observedDate === '2026-08-02'
+    )!
+    expect(compiled.audit.exactDuplicateCount).toBe(0)
+    expect(invalid.reason).toBe('invalid-price')
+    if (invalid.reason !== 'invalid-price') throw new Error('expected invalid-price evidence')
+    expect(invalid.rawPriceValues).toHaveLength(3)
+    expect(new Set(invalid.rawPriceValues).size).toBe(3)
+    expect(invalid.rawPriceValues.every(value => value.length <= 64)).toBe(true)
+    const retained = compiled.normalizedSlice.rejectedPilotRows.filter(row =>
+      row.premiseCode === '3' && row.observedDate === '2026-08-02'
+    )
+    expect(new Set(retained.map(row => row.rawPriceValue)).size).toBe(3)
+    const reproduced = compilePilotFromNormalizedSlice({
+      slice: compiled.normalizedSlice,
+      parsedContent: structuredClone(input.content),
+      verifiedDigests: fixtureVerifiedDigests()
+    })
+    expect(canonicalizeCompilerJson(reproduced.audit)).toBe(canonicalizeCompilerJson(compiled.audit))
+  })
+
+  // Break caught: collision avoidance assigns different bounded classes to byte-identical long invalid values.
+  it('counts identical long raw prices as one exact duplicate', () => {
+    const longValue = `${commonPrefix}same`
+    const input = attachCollectedQualityReviews(makeCompilerInput({
+      extraRows: [
+        { ...pilotRow('2026-08-02'), premise_code: '3', price: longValue },
+        { ...pilotRow('2026-08-02'), premise_code: '3', price: longValue }
+      ]
+    }))
+    const compiled = compilePilot(input)
+    const invalid = compiled.audit.rejectedCells.find(cell =>
+      cell.reason === 'invalid-price' && cell.premiseCode === '3' && cell.observedDate === '2026-08-02'
+    )!
+    expect(compiled.audit.exactDuplicateCount).toBe(1)
+    if (invalid.reason !== 'invalid-price') throw new Error('expected invalid-price evidence')
+    expect(invalid.rawPriceValues).toHaveLength(1)
+  })
+})
+
 describe('cross-boundary provenance mutation matrix', () => {
   // Break caught: collection provenance validation is weaker than final compilation for a specific invalid coordinate.
   it.each([
@@ -850,6 +1061,137 @@ describe('cross-boundary provenance mutation matrix', () => {
     expect(() => validateSourceRowProvenance({
       sourceLock: slice.sourceLock, normalizedSlice: slice, audit: compiled.audit
     })).toThrow()
+  })
+})
+
+describe('normalized-slice semantic reproduction', () => {
+  // Break caught: reproduction trusts retained rows that have no authoritative premise lookup.
+  it('rejects a reference row whose premise lookup was removed', () => {
+    const compiled = compilePilot(makeCompilerInput())
+    const slice = structuredClone(compiled.normalizedSlice)
+    slice.premiseLookups = slice.premiseLookups.filter(row => row.code !== '20')
+    expect(() => compilePilotFromNormalizedSlice({
+      slice, parsedContent: fixtureParsedContent(), verifiedDigests: fixtureVerifiedDigests()
+    })).toThrow()
+  })
+
+  // Break caught: retained rows may claim an item that exists in lookup data but is absent from curated pilot content.
+  it('rejects a retained reference row outside curated item membership', () => {
+    const compiled = compilePilot(makeCompilerInput())
+    const slice = structuredClone(compiled.normalizedSlice)
+    slice.itemLookups.push({
+      code: '11', name: 'Uncurated Item', unit: 'each', itemGroup: '', itemCategory: ''
+    })
+    slice.referenceRows[0]!.itemCode = '11'
+    expect(() => compilePilotFromNormalizedSlice({
+      slice, parsedContent: fixtureParsedContent(), verifiedDigests: fixtureVerifiedDigests()
+    })).toThrow()
+  })
+
+  // Break caught: a retained reference row survives lookup state or premise-type drift that makes it ineligible.
+  it.each([
+    ['state', (lookup: any) => { lookup.state = 'Perak' }],
+    ['premise type', (lookup: any) => { lookup.premiseType = 'Pasar Basah' }]
+  ])('rejects reference %s drift during reproduction', (_name, mutate) => {
+    const compiled = compilePilot(makeCompilerInput())
+    const slice = structuredClone(compiled.normalizedSlice)
+    mutate(slice.premiseLookups.find(row => row.code === '20'))
+    expect(() => compilePilotFromNormalizedSlice({
+      slice, parsedContent: fixtureParsedContent(), verifiedDigests: fixtureVerifiedDigests()
+    })).toThrow()
+  })
+
+  // Break caught: target rows can name a reference-only premise and still influence the reproduced slice.
+  it('rejects a pilot row outside curated premise membership', () => {
+    const compiled = compilePilot(makeCompilerInput())
+    const slice = structuredClone(compiled.normalizedSlice)
+    const row = slice.pilotRows.find(candidate =>
+      candidate.observedDate === '2026-08-02' && candidate.premiseCode === '3'
+    )!
+    row.premiseCode = '4'
+    expect(() => compilePilotFromNormalizedSlice({
+      slice, parsedContent: fixtureParsedContent(), verifiedDigests: fixtureVerifiedDigests()
+    })).toThrow()
+  })
+
+  // Break caught: reproduction permits the curated H-1 row to remain in the reference universe after removal from the pilot universe.
+  it('requires exact curated reference and pilot overlap on H-1', () => {
+    const compiled = compilePilot(makeCompilerInput())
+    const slice = structuredClone(compiled.normalizedSlice)
+    slice.pilotRows = slice.pilotRows.filter(row => !(
+      row.observedDate === '2026-08-01' && row.premiseCode === '3'
+    ))
+    expect(() => compilePilotFromNormalizedSlice({
+      slice, parsedContent: fixtureParsedContent(), verifiedDigests: fixtureVerifiedDigests()
+    })).toThrow()
+  })
+
+  // Break caught: rejected H-1 overlap is not checked when the supplied review set is adjusted to the missing pilot row.
+  it('requires exact rejected reference and pilot overlap on H-1', () => {
+    const input = attachCollectedQualityReviews(makeCompilerInput({
+      extraRows: [{ ...pilotRow('2026-08-01'), premise_code: '3', price: 'broken-overlap' }]
+    }))
+    const compiled = compilePilot(input)
+    const slice = structuredClone(compiled.normalizedSlice)
+    slice.rejectedPilotRows = slice.rejectedPilotRows.filter(row => !(
+      row.observedDate === '2026-08-01' && row.premiseCode === '3'
+    ))
+    const parsedContent = structuredClone(input.content) as any
+    const isRemovedFlag = (flag: any) => flag.flag === 'rejected-cell' &&
+      flag.cell.reason === 'invalid-price' && flag.cell.observedDate === '2026-08-01' && flag.cell.premiseCode === '3'
+    parsedContent.qualityReviewBasis.qualityFlags = parsedContent.qualityReviewBasis.qualityFlags.filter(
+      (flag: any) => !isRemovedFlag(flag)
+    )
+    parsedContent.qualityReviews.qualityReviews = parsedContent.qualityReviews.qualityReviews.filter(
+      (review: any) => !isRemovedFlag(review.reviewBasis)
+    )
+    expect(() => compilePilotFromNormalizedSlice({
+      slice, parsedContent, verifiedDigests: fixtureVerifiedDigests()
+    })).toThrow()
+  })
+
+  // Break caught: exact official-unit equality is not rechecked for any of the four retained row arrays.
+  it.each(['referenceRows', 'pilotRows', 'rejectedReferenceRows', 'rejectedPilotRows'] as const)(
+    'rejects official-unit drift in normalized %s', arrayName => {
+      const input = attachCollectedQualityReviews(makeCompilerInput({
+        extraRows: [
+          { ...referenceOnlyRow('2026-07-15'), price: 'broken-reference' },
+          { ...pilotRow('2026-08-02'), premise_code: '3', price: 'broken-pilot' }
+        ]
+      }))
+      const compiled = compilePilot(input)
+      const slice = structuredClone(compiled.normalizedSlice)
+      slice[arrayName][0]!.officialUnit = 'EACH'
+      expect(() => compilePilotFromNormalizedSlice({
+        slice, parsedContent: structuredClone(input.content), verifiedDigests: fixtureVerifiedDigests()
+      })).toThrow()
+    }
+  )
+
+  // Break caught: duplicate provenance is checked globally for conflicts but not for repetition inside one slice array.
+  it.each(['referenceRows', 'pilotRows', 'rejectedReferenceRows', 'rejectedPilotRows'] as const)(
+    'rejects duplicate source-row provenance inside %s', arrayName => {
+      const input = attachCollectedQualityReviews(makeCompilerInput({
+        extraRows: [
+          { ...referenceOnlyRow('2026-07-15'), price: 'broken-reference' },
+          { ...pilotRow('2026-08-02'), premise_code: '3', price: 'broken-pilot' }
+        ]
+      }))
+      const slice = structuredClone(compilePilot(input).normalizedSlice)
+      ;(slice[arrayName] as any[]).push(structuredClone(slice[arrayName][0]!))
+      expect(NormalizedSourceSliceV1Schema.safeParse(slice).success).toBe(false)
+    }
+  )
+
+  // Break caught: the intentional H-1 source-row overlap between reference and pilot arrays is treated as a global duplicate.
+  it('allows identical H-1 provenance across the reference and pilot arrays', () => {
+    const slice = compilePilot(makeCompilerInput()).normalizedSlice
+    const reference = slice.referenceRows.find(row => row.observedDate === '2026-08-01' && row.premiseCode === '1')!
+    const pilot = slice.pilotRows.find(row => row.observedDate === '2026-08-01' && row.premiseCode === '1')!
+    expect({ sourceManifestIndex: pilot.sourceManifestIndex, rowNumber: pilot.rowNumber }).toEqual({
+      sourceManifestIndex: reference.sourceManifestIndex, rowNumber: reference.rowNumber
+    })
+    expect(NormalizedSourceSliceV1Schema.safeParse(slice).success).toBe(true)
   })
 })
 

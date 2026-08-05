@@ -77,3 +77,48 @@ Two repository/environment gates cannot complete in this sandbox:
 - The pure compiler treats digest strings (including review-host-policy and report byte digests) as adapter-attested values; it binds and compares them but intentionally does not hash bytes. Task 7 must compute/verify those digests before invocation.
 - Full-suite and bundle completion are blocked by inherited sandbox/config conditions described above; focused/domain/type gates are clean.
 - The compiler files are large because the brief centralizes strict schemas, pure compilation, collection, reproduction, chronology, desk gates, and provenance in Task 6. No unrelated refactor was included.
+
+## Fix round 1 — compiler reproduction hardening
+
+Status remains in progress pending fresh independent review.
+
+The first focused RED added semantic normalized-slice mutations for lookup membership, curated membership, exact unit binding, Selangor/type eligibility, pilot membership, H−1 overlap, and provenance uniqueness within each of the four row arrays. The targeted run collected 120 tests and produced the intended 12 failures; the unchanged cross-array H−1 provenance case remained accepted. After the semantic row validator and per-array uniqueness refinements were added, the focused group passed 15/15.
+
+The second RED expanded the compiler file to 135 tests and produced 13 intended failures: six numeric-IPv4 authority/policy cases, canonical review ordering, two invalid-code/wrong-month boundary cases, mixed-fraction instant ordering, absent optional item fields, source-kind/mode binding, and distinct long invalid-price equality. A final optional-field RED then isolated missing-versus-whitespace duplicate comparison while retaining control-character rejection. Each focused RED was followed by its GREEN before wider verification.
+
+The correction now:
+
+- Revalidates every valid/rejected reference/pilot row against authoritative lookup existence, exact lookup unit, curated item membership, normalized Selangor and allowed premise type, and curated pilot premise membership. Curated valid and rejected H−1 reference/pilot rows must overlap exactly.
+- Rejects duplicate provenance independently inside each normalized row array while continuing to permit the intentional identical reference/pilot overlap.
+- Orders source retrieval and compilation as parsed epochs, including mixed fractional precisions, and checks a valid row date against its transaction manifest month before invalid-code exclusion in both final compilation and audit-only collection.
+- Rejects dotted, shortened, octal-looking, and hexadecimal-looking numeric IPv4 authority forms in both source authority extraction and the retailer host policy.
+- Maps absent or whitespace-only optional item group/category fields to canonical empty strings, compares missing/whitespace duplicates equally, reproduces empty values, and still rejects control characters.
+- Binds fixture mode to synthetic-fixture source locks and desk-demo mode to official source locks in compile, collection, and normalized-slice schemas.
+- Canonical-sorts premise, item, and nested quality review arrays by reviewer ID in their shared schema parse outputs.
+- Keeps full invalid raw-price equality classes until a deterministic per-cell bounded representation is assigned. Distinct long values sharing the first 64 characters—and values colliding with a candidate suffix token—remain distinct; identical long values remain duplicates; normalized reproduction emits byte-equivalent audit output.
+- Adds the explicit desk reproduction mutation for a review-host-policy digest record mismatch, plus exact source-row membership/unit mutations across the normalized universes.
+
+Fresh verification after the last source edit:
+
+```text
+$ npm run test:saves -- src/pricecatcher/__tests__/compile.test.ts
+# 1 file, 136 tests passed
+
+$ npm run test:saves -- src/pricecatcher
+# 7 files, 548 tests passed
+
+$ npm run typecheck:saves
+# all four configured TypeScript projects passed
+
+$ npm run build
+# Electron/Vite main, preload, and renderer builds passed
+
+$ git diff --check
+# passed
+
+$ rg -n <high-confidence credential/private-key patterns> <five changed files>
+# no findings (rg exit 1)
+
+$ rg -n -P <nonprinting-byte pattern> <five changed files>
+# no findings (rg exit 1)
+```

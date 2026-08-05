@@ -3,10 +3,13 @@ import { z } from 'zod'
 export const REVIEW_HOST_POLICY_VERSION = '2026-08-03-v1' as const
 
 const DNS_HOST_PATTERN = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/
-const IPV4_PATTERN = /^\d{1,3}(?:\.\d{1,3}){3}$/
+const IPV4_NUMBER_LABEL_PATTERN = /^(?:0x[0-9a-f]+|\d+)$/i
+
+const isIpv4NumberForm = (host: string): boolean =>
+  host.split('.').every(label => IPV4_NUMBER_LABEL_PATTERN.test(label))
 
 const validPolicyHost = (host: string): boolean =>
-  host === host.toLowerCase() && DNS_HOST_PATTERN.test(host) && !IPV4_PATTERN.test(host)
+  host === host.toLowerCase() && DNS_HOST_PATTERN.test(host) && !isIpv4NumberForm(host)
 
 export const ReviewHostPolicyV1Schema = z.object({
   version: z.literal(REVIEW_HOST_POLICY_VERSION),

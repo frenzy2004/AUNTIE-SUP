@@ -139,9 +139,15 @@ const requireUniqueCodes = <T extends { code: string }>(values: T[], label: stri
 const lookupFields = (value: PremiseLookup): string[] => [
   value.name, value.address, value.premiseType, value.state, value.district
 ].map(normalizeLookupToken)
+const normalizeOptionalLookupToken = (value: string): string => {
+  const normalized = value.normalize('NFC')
+  if (/\p{Cc}/u.test(normalized)) throw new RangeError('optional lookup token must not contain control characters')
+  return /^\p{White_Space}*$/u.test(normalized) ? '' : normalizeLookupToken(normalized)
+}
 const itemLookupFields = (value: ItemLookup): string[] => [
-  value.name, value.unit, value.itemGroup, value.itemCategory
-].map(normalizeLookupToken)
+  normalizeLookupToken(value.name), normalizeLookupToken(value.unit),
+  normalizeOptionalLookupToken(value.itemGroup), normalizeOptionalLookupToken(value.itemCategory)
+]
 
 const collapseLookups = <T extends { code: string }>(values: T[], fields: (value: T) => string[], label: string): T[] => {
   const groups = new Map<string, T[]>()
@@ -273,7 +279,8 @@ const validateSourceContext = (input: CompilePilotInput): void => {
   if (canonicalSources.some((source, index) => canonicalKey(source) !== canonicalKey(input.sourceLock.sources[index]))) {
     throw new RangeError('source lock sources must use canonical role and month order')
   }
-  if (input.sourceLock.sources.some(source => source.manifest.retrievedAt > input.compiledAt)) {
+  const compiledEpoch = Date.parse(input.compiledAt)
+  if (input.sourceLock.sources.some(source => Date.parse(source.manifest.retrievedAt) > compiledEpoch)) {
     throw new RangeError('source retrieval must not postdate compilation')
   }
 }
@@ -320,12 +327,14 @@ const parseCore = (rawInput: unknown): ParsedCore => {
     const dateResult = LocalDateSchema.safeParse(raw.date)
     const premiseCode = canonicalizeCode(raw.premise_code)
     const itemCode = canonicalizeCode(raw.item_code)
+    if (dateResult.success && manifestSource.yearMonth !== dateResult.data.slice(0, 7)) {
+      throw new RangeError('transaction provenance month mismatch')
+    }
     if (!dateResult.success || premiseCode === null || itemCode === null) {
       invalidRowCount += 1
       continue
     }
     const observedDate = dateResult.data
-    if (manifestSource.yearMonth !== observedDate.slice(0, 7)) throw new RangeError('transaction provenance month mismatch')
     parsedRowCount += 1
     if (!premiseLookupMap.has(premiseCode)) countCode(unknownPremiseCodes, premiseCode)
     if (!itemLookupMap.has(itemCode)) countCode(unknownItemCodes, itemCode)
@@ -342,7 +351,7 @@ const parseCore = (rawInput: unknown): ParsedCore => {
       sourceManifestIndex: raw.sourceManifestIndex, rowNumber: raw.rowNumber
     }
     if (priceSen === null) {
-      const invalid = { ...shared, status: 'invalid-price' as const, rawPriceValue: String(raw.price).slice(0, 64) }
+      const invalid = { ...shared, status: 'invalid-price' as const, rawPriceValue: String(raw.price) }
       rejectedReferenceRows.push(invalid)
       if (premiseCodes.has(premiseCode)) rejectedPilotRows.push(invalid)
       continue
@@ -377,6 +386,53 @@ const withoutProvenance = (row: SourcedParsedObservation): ParsedObservation => 
 
 const sourceRowsFor = (rows: readonly SourcedParsedObservation[], key: string) => rows
   .filter(row => observationKey(row) === key).map(rowRef).sort(compareRowRefs)
+
+const MAX_INVALID_RAW_PRICE_LENGTH = 64
+
+const encodeInvalidPriceClasses = (rows: readonly SourcedInvalidObservation[]): SourcedInvalidObservation[] => {
+  const rawValuesByCell = new Map<string, Set<string>>()
+  for (const row of rows) {
+    const values = rawValuesByCell.get(observationKey(row)) ?? new Set<string>()
+    values.add(row.rawPriceValue)
+    rawValuesByCell.set(observationKey(row), values)
+  }
+  const encodedByCell = new Map<string, Map<string, string>>()
+  for (const [key, rawValueSet] of rawValuesByCell) {
+    const rawValues = [...rawValueSet].sort(compareText)
+    const encoded = new Map<string, string>()
+    const occupied = new Set(rawValues.filter(value => value.length <= MAX_INVALID_RAW_PRICE_LENGTH))
+    for (const value of occupied) encoded.set(value, value)
+    const longValuesByPrefix = new Map<string, string[]>()
+    for (const value of rawValues.filter(candidate => candidate.length > MAX_INVALID_RAW_PRICE_LENGTH)) {
+      const prefix = value.slice(0, MAX_INVALID_RAW_PRICE_LENGTH)
+      longValuesByPrefix.set(prefix, [...(longValuesByPrefix.get(prefix) ?? []), value])
+    }
+    for (const [prefix, collidingValues] of [...longValuesByPrefix.entries()].sort(([left], [right]) => compareText(left, right))) {
+      if (collidingValues.length === 1 && !occupied.has(prefix)) {
+        encoded.set(collidingValues[0]!, prefix)
+        occupied.add(prefix)
+        continue
+      }
+      let ordinal = 0
+      for (const value of collidingValues.sort(compareText)) {
+        let candidate: string
+        do {
+          const suffix = `~${ordinal.toString(36)}`
+          if (suffix.length >= MAX_INVALID_RAW_PRICE_LENGTH) throw new RangeError('too many colliding invalid-price classes')
+          candidate = `${prefix.slice(0, MAX_INVALID_RAW_PRICE_LENGTH - suffix.length)}${suffix}`
+          ordinal += 1
+        } while (occupied.has(candidate))
+        encoded.set(value, candidate)
+        occupied.add(candidate)
+      }
+    }
+    encodedByCell.set(key, encoded)
+  }
+  return rows.map(row => ({
+    ...row,
+    rawPriceValue: encodedByCell.get(observationKey(row))!.get(row.rawPriceValue)!
+  }))
+}
 
 const auditCellFor = (
   cell: ConsolidatedCell,
@@ -429,6 +485,47 @@ const validateDeskReports = (core: ParsedCore, dataAsOfDate: LocalDate): void =>
   if (input.sourceLock.analysisStartDate > addLocalDates(dataAsOfDate, -59)) throw new RangeError('feasibility lock does not cover the derived horizon')
 }
 
+const validateRetainedUniverseRows = (input: {
+  core: ParsedCore
+  dataAsOfDate: LocalDate
+  referenceRows: readonly SourcedObservation[]
+  pilotRows: readonly SourcedObservation[]
+  rejectedReferenceRows: readonly SourcedInvalidObservation[]
+  rejectedPilotRows: readonly SourcedInvalidObservation[]
+}): void => {
+  const premiseLookups = new Map(input.core.premiseLookups.map(row => [row.code, row]))
+  const itemLookups = new Map(input.core.itemLookups.map(row => [row.code, row]))
+  const curatedPremiseCodes = new Set(input.core.premises.map(row => row.code))
+  const curatedItemCodes = new Set(input.core.items.map(row => row.code))
+  const validateRow = (row: SourcedParsedObservation, pilot: boolean): void => {
+    const premiseLookup = premiseLookups.get(row.premiseCode)
+    const itemLookup = itemLookups.get(row.itemCode)
+    if (!premiseLookup || !itemLookup) throw new RangeError('normalized row is absent from authoritative lookups')
+    if (row.officialUnit !== itemLookup.unit) throw new RangeError('normalized row official unit differs from authoritative lookup')
+    if (!curatedItemCodes.has(row.itemCode)) throw new RangeError('normalized row item is absent from curated content')
+    if (normalizeLookupToken(premiseLookup.state) !== 'selangor' || !isAllowedSingleOperator(premiseLookup.premiseType)) {
+      throw new RangeError('normalized row premise is outside the eligible reference universe')
+    }
+    if (pilot && !curatedPremiseCodes.has(row.premiseCode)) {
+      throw new RangeError('normalized pilot row premise is absent from curated content')
+    }
+  }
+  input.referenceRows.forEach(row => validateRow(row, false))
+  input.rejectedReferenceRows.forEach(row => validateRow(row, false))
+  input.pilotRows.forEach(row => validateRow(row, true))
+  input.rejectedPilotRows.forEach(row => validateRow(row, true))
+
+  const overlapDate = addLocalDates(input.dataAsOfDate, -1)
+  const overlapKeys = (rows: readonly SourcedParsedObservation[], reference: boolean): string[] => rows
+    .filter(row => row.observedDate === overlapDate && (!reference || curatedPremiseCodes.has(row.premiseCode)))
+    .map(canonicalKey)
+    .sort(compareText)
+  if (overlapKeys(input.referenceRows, true).join('\n') !== overlapKeys(input.pilotRows, false).join('\n') ||
+      overlapKeys(input.rejectedReferenceRows, true).join('\n') !== overlapKeys(input.rejectedPilotRows, false).join('\n')) {
+    throw new RangeError('curated reference and pilot rows must overlap exactly on H-1')
+  }
+}
+
 const materialize = (
   core: ParsedCore,
   reviewMode: 'final' | 'collection' = 'final'
@@ -448,10 +545,20 @@ const materialize = (
   const trimmedRejectedReferenceRows = core.rejectedReferenceRows.filter(row => row.observedDate >= referenceStart && row.observedDate <= referenceEnd)
   const trimmedPilotRows = core.pilotRows.filter(row => targetDates.includes(row.observedDate))
   const trimmedRejectedPilotRows = core.rejectedPilotRows.filter(row => targetDates.includes(row.observedDate))
-  const referenceCollapsed = collapseObservationRows([
-    ...trimmedReferenceRows.map(withoutProvenance), ...trimmedRejectedReferenceRows.map(withoutProvenance)
+  validateRetainedUniverseRows({
+    core, dataAsOfDate,
+    referenceRows: trimmedReferenceRows, pilotRows: trimmedPilotRows,
+    rejectedReferenceRows: trimmedRejectedReferenceRows, rejectedPilotRows: trimmedRejectedPilotRows
+  })
+  const boundedRejectedRows = encodeInvalidPriceClasses([
+    ...trimmedRejectedReferenceRows, ...trimmedRejectedPilotRows
   ])
-  const targetSourceRows: SourcedParsedObservation[] = [...trimmedPilotRows, ...trimmedRejectedPilotRows]
+  const boundedRejectedReferenceRows = boundedRejectedRows.slice(0, trimmedRejectedReferenceRows.length)
+  const boundedRejectedPilotRows = boundedRejectedRows.slice(trimmedRejectedReferenceRows.length)
+  const referenceCollapsed = collapseObservationRows([
+    ...trimmedReferenceRows.map(withoutProvenance), ...boundedRejectedReferenceRows.map(withoutProvenance)
+  ])
+  const targetSourceRows: SourcedParsedObservation[] = [...trimmedPilotRows, ...boundedRejectedPilotRows]
   const targetCollapsed = collapseObservationRows(targetSourceRows.map(withoutProvenance))
   const targetCellMap = new Map(targetCollapsed.cells.map(cell => [cellKey(cell), cell]))
   const referenceStats = new Map<string, ReferenceStats>()
@@ -536,7 +643,7 @@ const materialize = (
     qualityReviewDispositionCount = qualityReviews.qualityReviews.length
   }
   const retainedByProvenance = new Map<string, SourcedParsedObservation>()
-  for (const row of [...trimmedReferenceRows, ...trimmedRejectedReferenceRows, ...trimmedPilotRows, ...trimmedRejectedPilotRows]) {
+  for (const row of [...trimmedReferenceRows, ...boundedRejectedReferenceRows, ...trimmedPilotRows, ...boundedRejectedPilotRows]) {
     retainedByProvenance.set(`${row.sourceManifestIndex}:${row.rowNumber}`, row)
   }
   const retainedUnique = [...retainedByProvenance.values()]
@@ -575,10 +682,10 @@ const materialize = (
     contentDigests: input.contentDigests, ingestionSummary: core.ingestionSummary,
     premiseLookups: core.premiseLookups, itemLookups: core.itemLookups,
     referenceRows: trimmedReferenceRows.sort(compareSourcedRows), pilotRows: trimmedPilotRows.sort(compareSourcedRows),
-    rejectedReferenceRows: trimmedRejectedReferenceRows.sort(compareSourcedRows).map(({ status: _status, ...row }) => ({
+    rejectedReferenceRows: boundedRejectedReferenceRows.sort(compareSourcedRows).map(({ status: _status, ...row }) => ({
       ...row, reason: 'invalid-price' as const
     })),
-    rejectedPilotRows: trimmedRejectedPilotRows.sort(compareSourcedRows).map(({ status: _status, ...row }) => ({
+    rejectedPilotRows: boundedRejectedPilotRows.sort(compareSourcedRows).map(({ status: _status, ...row }) => ({
       ...row, reason: 'invalid-price' as const
     }))
   })
@@ -596,10 +703,17 @@ export function validateSourceRowProvenance(input: {
   audit: CompilerAuditV1 | Omit<CompilerAuditV1, 'buildId'>
   qualityBasis?: z.infer<typeof QualityReviewBasisFileV1Schema>
 }): void {
-  const rows = [
-    ...input.normalizedSlice.referenceRows, ...input.normalizedSlice.pilotRows,
-    ...input.normalizedSlice.rejectedReferenceRows, ...input.normalizedSlice.rejectedPilotRows
-  ]
+  const rowArrays = [
+    input.normalizedSlice.referenceRows, input.normalizedSlice.pilotRows,
+    input.normalizedSlice.rejectedReferenceRows, input.normalizedSlice.rejectedPilotRows
+  ] as const
+  for (const rowArray of rowArrays) {
+    const provenance = rowArray.map(row => `${row.sourceManifestIndex}:${row.rowNumber}`)
+    if (new Set(provenance).size !== provenance.length) {
+      throw new RangeError('source-row provenance must be unique within each normalized slice array')
+    }
+  }
+  const rows = rowArrays.flat()
   const identities = new Map<string, string>()
   const fullIdentities = new Map<string, string>()
   const retainedRows = new Map<string, typeof rows[number]>()
